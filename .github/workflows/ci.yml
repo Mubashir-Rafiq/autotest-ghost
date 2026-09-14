@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  # Fast gates. These do not depend on the Python version, so running them once
+  # rather than once per matrix entry keeps CI quick.
+  static:
+    name: lint + types + architecture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python pin 3.13
+      - run: uv sync
+      - name: ruff (lint)
+        run: uv run ruff check .
+      - name: ruff (format)
+        run: uv run ruff format --check .
+      - name: mypy (strict)
+        run: uv run mypy
+      - name: import-linter (architecture contracts)
+        run: uv run lint-imports
+
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python pin ${{ matrix.python-version }}
+      - run: uv sync
+      - run: uv run pytest -q
+
+  # Non-blocking early warning. watchdog 6.0 and httpx do not yet advertise 3.14
+  # support in their classifiers, so a failure here is information, not a
+  # regression. Promote this into the required matrix above once they do.
+  forward-compat:
+    name: forward-compat (3.14)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python pin 3.14
+      - run: uv sync
+      - run: uv run pytest -q

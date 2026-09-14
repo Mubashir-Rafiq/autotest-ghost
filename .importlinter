@@ -1,0 +1,22 @@
+# Architectural contracts, checked by `lint-imports`.
+#
+# SKILL.md states that Ghost's dependencies point one way and never cycle. Prose
+# rules get violated; this file makes the rule a build failure instead.
+#
+# The `layers` contract reads TOP-DOWN: a module may import anything listed
+# BELOW it, and nothing listed above it. Modules on the same line (separated by
+# `|`) are siblings and may not import each other.
+#
+# This contract grows one module per stage. Adding your new module to the right
+# layer is part of finishing a stage -- if you cannot decide where it goes, that
+# is a signal the module has more than one reason to change.
+
+[importlinter]
+root_package = ghost
+
+[importlinter:contract:layers]
+name = Ghost layered architecture
+type = layers
+layers =
+    ghost.cli
+    ghost.errors

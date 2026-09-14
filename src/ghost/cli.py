@@ -1,0 +1,159 @@
+"""Ghost's command-line interface.
+
+Owns: argument parsing, the mapping from a command to the one function that
+implements it, and the process exit code.
+
+Does NOT: contain business logic. Every command body should read as (1) resolve
+the project root, (2) load config, (3) build one typed request object, (4) call
+exactly one function from the module that owns the behaviour, (5) hand the
+result to a reporter. Any command that grows a loop, a state machine, or a
+``if provider == ...`` branch has logic that belongs in another module.
+
+The size of this file is itself a design signal: the implementation this project
+replaces had a 1,201-line ``cli.py``, roughly a quarter of the whole codebase,
+because behaviour kept accumulating in command bodies. If this file passes ~350
+lines, something has leaked into it.
+"""
+
+from __future__ import annotations
+
+import platform
+import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as distribution_version
+from typing import TYPE_CHECKING, Final
+
+import click
+
+from ghost import __version__
+from ghost.errors import GhostError
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+__all__ = ["cli", "main"]
+
+# Distributions Ghost needs at runtime, checked by `ghost doctor`. Keep in sync
+# with [project.dependencies] in pyproject.toml -- doctor exists to tell a user
+# why Ghost is broken on their machine, so a stale list here defeats the point.
+_RUNTIME_DISTRIBUTIONS: Final[tuple[str, ...]] = (
+    "click",
+    "pydantic",
+    "pydantic-settings",
+    "httpx",
+    "groq",
+    "rich",
+    "watchdog",
+    "pytest",
+)
+
+# Optional extras. Absence is normal and reported as such, never as a failure.
+_OPTIONAL_DISTRIBUTIONS: Final[tuple[str, ...]] = (
+    "openai",
+    "anthropic",
+)
+
+_OK: Final = "ok"
+_MISSING: Final = "MISSING"
+
+
+def _installed_version(distribution: str) -> str | None:
+    """Return the installed version of *distribution*, or ``None`` if absent."""
+    try:
+        return distribution_version(distribution)
+    except PackageNotFoundError:
+        return None
+
+
+@click.group(invoke_without_command=True)
+@click.version_option(__version__, "--version", "-v", prog_name="ghost")
+@click.pass_context
+def cli(ctx: click.Context) -> None:
+    """Ghost -- generate, run, and heal tests for your Python project."""
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+@cli.command()
+def version() -> None:
+    """Show Ghost, Python, and platform versions."""
+    click.echo(f"ghost   {__version__}")
+    click.echo(f"python  {platform.python_version()} ({sys.executable})")
+    click.echo(f"system  {platform.system()} {platform.release()}")
+
+
+@cli.command()
+def doctor() -> None:
+    """Check that Ghost's environment is healthy.
+
+    Reports the interpreter in use and whether each dependency is importable.
+    This command grows with the project: later stages add configuration
+    discovery and provider credential checks as those concepts come into
+    existence.
+    """
+    click.echo("Ghost environment check")
+    click.echo("=" * 46)
+
+    click.echo(f"\nghost       {__version__}")
+    click.echo(f"python      {platform.python_version()}")
+    click.echo(f"executable  {sys.executable}")
+
+    click.echo("\nRequired dependencies")
+    missing: list[str] = []
+    for distribution in _RUNTIME_DISTRIBUTIONS:
+        found = _installed_version(distribution)
+        if found is None:
+            missing.append(distribution)
+        status = found if found is not None else _MISSING
+        click.echo(f"  {distribution:<20} {status}")
+
+    click.echo("\nOptional providers")
+    for distribution in _OPTIONAL_DISTRIBUTIONS:
+        found = _installed_version(distribution)
+        status = found if found is not None else "not installed"
+        click.echo(f"  {distribution:<20} {status}")
+
+    click.echo("")
+    if missing:
+        click.echo(f"{len(missing)} required dependency/dependencies missing: {', '.join(missing)}")
+        click.echo("Run 'uv sync' to install them.")
+        raise SystemExit(1)
+    click.echo(f"All required dependencies present ({_OK}).")
+
+
+def _system_exit_code(exc: SystemExit) -> int:
+    """Normalise ``SystemExit.code``, which may be ``None`` or a non-integer."""
+    if exc.code is None:
+        return 0
+    return exc.code if isinstance(exc.code, int) else 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point. Returns a process exit code rather than calling ``sys.exit``.
+
+    ``standalone_mode=False`` stops click from exiting the process itself, which
+    is what lets this function own the error boundary: an anticipated
+    :class:`~ghost.errors.GhostError` becomes a one-line message, while anything
+    else propagates with its traceback intact, because an unexpected exception
+    is a bug in Ghost and hiding it would make that bug harder to find.
+    """
+    try:
+        cli.main(args=argv, standalone_mode=False)
+    except click.exceptions.Exit as exc:
+        return exc.exit_code
+    except click.exceptions.Abort:
+        click.echo("Aborted.", err=True)
+        return 130
+    except click.ClickException as exc:
+        exc.show()
+        return exc.exit_code
+    except GhostError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        return 1
+    except SystemExit as exc:  # raised by commands that fail their own checks
+        return _system_exit_code(exc)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

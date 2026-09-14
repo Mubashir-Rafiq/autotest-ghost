@@ -49,27 +49,41 @@ This is the single highest-leverage rule in this skill.
 ## Module boundaries (SPEC.md §3) — put new code in the right place
 
 ```
-ghost/
+src/ghost/                 # src/ layout: the project root holds no importable package,
+│                          # so `import ghost` can only resolve to the installed one
 ├── __init__.py        # Public API surface + __version__ — only what's re-exported
-├── cli.py             # click CLI only — no business logic, delegates everything
-├── pipeline.py         # THE ONE generate→run→classify→heal→judge state machine
-├── daemon.py            # Background process management — calls pipeline.py, doesn't reimplement it
-├── change_tracker.py    # Content-hash cache only
-├── job_queue.py          # Debounce + worker queue only
-├── init.py               # AST scanner — pure static analysis, no LLM, no I/O beyond the fs
-├── config.py             # pydantic-settings model — the ONLY place that reads ghost.toml/.env/env
-├── chat.py               # Prompt construction + LLM call + response cleanup + Judge
+├── errors.py          # Exception taxonomy rooted at GhostError — a leaf, imports nothing
+├── events.py           # Pure data: PipelineEvent/PipelineResult/TestRunResult. Exists so
+│                       # pipeline.py never imports console.py — the shared vocabulary
+├── config.py            # pydantic-settings model — the ONLY place that reads ghost.toml/.env/env
+├── rate_limiter.py      # Rate limiting + retry — no knowledge of what it's limiting
 ├── providers.py          # BaseProvider + concrete providers behind one interface
+├── init.py               # AST scanner + project-tree rendering — pure static analysis, no LLM
+├── prompts.py            # Pure (request) -> messages. No I/O, no clock, no config reads
+├── chat.py               # LLM call plumbing, response validation, verdict parsing
 ├── runner.py             # Runs the generated test, returns structured results
-├── rate_limiter.py       # Rate limiting + retry — no knowledge of what it's limiting
-└── console.py            # Presentation only — never imported by runner/config/providers/change_tracker
+│   └── _pytest_plugin/   # Stdlib-only pytest plugin; runs in the TARGET project's
+│                         # interpreter, so it must never import ghost
+├── change_tracker.py     # Content-hash cache only
+├── pipeline.py           # THE ONE generate→run→classify→heal→judge state machine
+├── job_queue.py          # Debounce + worker pool only
+├── watcher.py            # The ONE watchdog-thread → asyncio-loop boundary
+├── daemon.py             # Background process management — calls the pipeline, never reimplements it
+├── cli.py                # click CLI only — no business logic; the ONE asyncio.run
+└── console.py            # Presentation only — never imported by logic modules
 tests/                    # One test file per module above, fixtures in conftest.py
 ```
 
-**Dependency direction is one-way and acyclic:** `cli.py` → `pipeline.py` →
-(`chat.py`, `runner.py`, `change_tracker.py`, `job_queue.py`) →
-(`config.py`, `providers.py`). `console.py` is a leaf everything may call
-into for output, but it may call into nothing. `init.py` is self-contained.
+**Dependency direction is one-way and acyclic**, and it is machine-checked —
+`.importlinter` holds the authoritative layer ordering, and `uv run
+lint-imports` fails the build on a violation. Add your new module to that
+file as part of finishing it; if you can't decide which layer it belongs in,
+the module probably has more than one reason to change and wants splitting.
+
+Roughly: `cli.py` → `daemon.py` → `watcher.py` → `job_queue.py` →
+`pipeline.py` → (`chat.py`, `runner.py`, `change_tracker.py`) →
+(`prompts.py`, `providers.py`, `init.py`) → (`config.py`, `rate_limiter.py`) →
+(`events.py`, `errors.py`). `console.py` imports only `events.py` and `rich`.
 If you find yourself importing "up" this chain, the code is in the wrong
 module — move it, don't add an exception.
 
@@ -100,10 +114,16 @@ Treat a violation here as a defect, not a style preference.
    messages on a malformed `ghost.toml`, not a silent `.get()` fallback or a
    raw `KeyError`.
 4. **Failure classification is structural, not stringly-typed.**
-   Classify test outcomes from `pytest --json-report` / `TestReport` objects
-   (IMPROVEMENTS.md §2.3), never by grepping stdout/stderr for substrings
-   like `"AssertionError"` — that breaks the moment a test's own output
-   contains the word.
+   Never grep stdout/stderr for substrings like `"AssertionError"` — that
+   breaks the moment a test's own output contains the word (IMPROVEMENTS.md
+   §2.3). Use `ghost/runner/_pytest_plugin/`, our first-party pytest plugin,
+   which reports the real `excinfo.type.__name__`.
+   **Do not substitute `pytest-json-report` or `pytest-reportlog` for it.**
+   Verified in pytest's source (`_pytest/_code/code.py`): `exconly(tryshort=True)`
+   strips the literal `"AssertionError: "` prefix, so a failed `assert x == y`
+   reaches *any* report consumer as `"assert 1 == 2"` with the class name gone.
+   `--junitxml` has the same hole. `pytest_exception_interact` is the only hook
+   where the exception class survives.
 5. **Always check the success case before classifying failure.** A passing
    run must short-circuit before any classifier runs (SPEC.md §7 step 4) —
    this is what the original `main.py` got wrong, treating a pass as
@@ -154,12 +174,15 @@ Don't call a module finished until:
       calls (LLM providers, network) — SPEC.md §14's convention.
 - [ ] Errors raised or returned name the offending input, not a generic
       "invalid input" message.
-- [ ] `ruff check`, `black --check`, `isort --check`, `mypy`, and `pytest`
-      all pass locally before considering the change complete — these are
-      wired into CI and pre-commit (SPEC.md §14, IMPROVEMENTS.md §1.4/§1.5)
-      and a red run means fix the code, not skip the gate.
+- [ ] **`make check` passes** — ruff lint, ruff format, mypy (strict),
+      import-linter, pytest. Wired into CI and pre-commit (SPEC.md §14,
+      IMPROVEMENTS.md §1.4/§1.5); a red run means fix the code, not skip the
+      gate. (`ruff` replaced `black`/`isort` — don't reintroduce them.)
+- [ ] The module is added to `.importlinter`'s layer contract.
 - [ ] If this change replaced an older approach, the old code is deleted in
       the same change — no dead second implementation left "just in case."
+- [ ] `ROADMAP.md` updated and the stage's `docs/stages/NN-<name>.md`
+      explanation written, in the same commit.
 
 ---
 
@@ -177,8 +200,8 @@ Don't call a module finished until:
    above).
 4. **Write the contract, then the code, then the test** — in that order, not
    test-after-the-fact and not contract-as-comment-after-implementation.
-5. **Run the full gate** (`pytest`, `ruff`, `black`, `isort`, `mypy`) before
-   reporting the change complete.
+5. **Run `make check`** (ruff, ruff format, mypy, import-linter, pytest)
+   before reporting the change complete.
 6. **Update SPEC.md/IMPROVEMENTS.md** if the change intentionally departs
    from what they describe — they're meant to stay accurate as the rebuild
    progresses, not frozen as day-one documents.
@@ -191,7 +214,8 @@ Don't call a module finished until:
 |---|---|---|
 | Same generate/run/heal/judge logic appearing in two files | The exact SPEC.md §7.4 bug reappearing | Extract to `pipeline.py`; both callers call it |
 | A second function that writes `ghost.toml` | The SPEC.md §4.1 drift reappearing | One template-writing function, used by every caller |
-| `if "AssertionError" in output` / similar string checks | The SPEC.md §9 fragile classifier | Use structured pytest result data |
+| `if "AssertionError" in output` / similar string checks | The SPEC.md §9 fragile classifier | Use the first-party pytest plugin's structured result (see rule 4) |
+| A `.md` file showing up modified after running a formatter | A tool rewriting a spec that pins exact strings | `*.md` is excluded in `pyproject.toml`; keep it that way |
 | A provider-name `if`/`elif` chain outside `providers.py`'s registry | Provider abstraction leaking | Route through `get_provider()`, extend the registry |
 | A config flag read in one call site but not another | The auto_heal/use_judge drift bug class | Single call site, or a shared function both use |
 | `console.py`/rich imports inside `runner.py`, `config.py`, etc. | Presentation leaking into logic | Return data; let the caller print it |
