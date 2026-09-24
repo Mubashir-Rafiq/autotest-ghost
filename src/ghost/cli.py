@@ -18,6 +18,7 @@ lines, something has leaked into it.
 from __future__ import annotations
 
 import asyncio
+import json
 import platform
 import sys
 from importlib.metadata import PackageNotFoundError
@@ -30,6 +31,7 @@ import click
 from ghost import __version__
 from ghost.config import find_project_root, load_config
 from ghost.errors import ConfigError, GhostError, ProjectNotInitializedError
+from ghost.indexer import budget_context, walk_and_generate_json
 from ghost.providers import (
     POPULAR_MODELS,
     get_provider,
@@ -220,6 +222,80 @@ def models_cmd(provider: str | None) -> None:
     for model in models:
         prefix = "  * " if model == config.ai.model else "    "
         click.echo(f"{prefix}{model}")
+
+
+@cli.command("index")
+@click.argument(
+    "path",
+    type=click.Path(path_type=Path, exists=True),
+    required=False,
+    default=None,
+)
+@click.option(
+    "--show",
+    "-s",
+    "_show",
+    is_flag=True,
+    default=False,
+    help="Display the project index and extracted AST symbols.",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Output the index as JSON.",
+)
+@click.option(
+    "--budget",
+    type=int,
+    default=None,
+    help="Limit output to a character budget (context budgeting).",
+)
+@click.option(
+    "--for-file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Target file for context budgeting prioritization.",
+)
+def index_cmd(
+    path: Path | None = None,
+    *,
+    _show: bool = False,
+    as_json: bool = False,
+    budget: int | None = None,
+    for_file: Path | None = None,
+) -> None:
+    """Index project Python files and build AST context."""
+    target = path or Path.cwd()
+    project_root = find_project_root(target) or target
+    config = load_config(project_root)
+
+    index_data = walk_and_generate_json(project_root, scanner_config=config.scanner)
+
+    if budget is not None or for_file is not None:
+        effective_budget = budget if budget is not None else 8000
+        index_data = budget_context(
+            index_data,
+            target_file=for_file,
+            max_chars=effective_budget,
+            root=project_root,
+        )
+
+    if as_json:
+        click.echo(json.dumps(index_data, indent=2, sort_keys=True))
+        return
+
+    if _show:
+        click.echo(f"Ghost AST Project Index: {project_root.name} ({len(index_data)} files)")
+        click.echo("=" * 60)
+        for file_key, summary in sorted(index_data.items()):
+            click.echo(f"\n{file_key}")
+            click.echo(f"  {summary}")
+        return
+
+    click.echo(f"Indexed {len(index_data)} file(s) in {project_root} -> .ghost/context.json")
+    click.echo("Use 'ghost index --show' to view the indexed symbols.")
 
 
 def _system_exit_code(exc: SystemExit) -> int:

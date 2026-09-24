@@ -29,6 +29,7 @@ from pathlib import Path
 __all__ = [
     "ConfigError",
     "GhostError",
+    "IndexingError",
     "ModelNotFoundError",
     "ProjectNotInitializedError",
     "ProviderAuthenticationError",
@@ -115,3 +116,12 @@ class ModelNotFoundError(ProviderError):
         )
         message = f"model {model!r} not found for provider {provider!r}.{hint}"
         super().__init__(provider, message)
+
+
+class IndexingError(GhostError):
+    """Failure during AST indexing or context generation."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"failed to index {path}: {reason}")

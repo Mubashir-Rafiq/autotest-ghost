@@ -19,6 +19,6 @@ name = Ghost layered architecture
 type = layers
 layers =
     ghost.cli
-    ghost.providers
+    ghost.providers | ghost.indexer
     ghost.config | ghost.rate_limiter
     ghost.errors

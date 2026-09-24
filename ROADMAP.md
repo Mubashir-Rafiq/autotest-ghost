@@ -6,15 +6,15 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 3 of 13 stages complete.**
+**Progress: 4 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
 | 0 | Scaffolding, tooling, CI | ✅ **done** | [00-scaffolding.md](docs/stages/00-scaffolding.md) |
 | 1 | Configuration | ✅ **done** | — |
 | 2 | Providers + rate limiting | ✅ **done** | — |
-| 3 | AST project indexing | ⬜ next | — |
-| 4 | Prompts + LLM client | ⬜ pending | — |
+| 3 | AST project indexing | ✅ **done** | — |
+| 4 | Prompts + LLM client | ⬜ next | — |
 | 5 | Test runner + classification | ⬜ pending | — |
 | 6 | **The pipeline** | ⬜ pending | — |
 | 7 | Change tracking | ⬜ pending | — |
@@ -50,17 +50,19 @@ src/ghost/
 ├── config.py          # GhostConfig, layered loading, validation
 ├── rate_limiter.py    # GCRA rate limiting and backoff calculation
 ├── providers.py       # BaseProvider template method, GroqProvider, registry
-└── cli.py             # command group: version, doctor, config, providers, models
+├── indexer.py         # AST static analysis, shared ignore logic, budgeting
+└── cli.py             # command group: version, doctor, config, providers, models, index
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
 ├── test_cli.py            # command behaviour via CliRunner
 ├── test_config.py         # configuration loading, precedence, and validation
 ├── test_rate_limiter.py   # GCRA rate limiter scheduling and backoff
-└── test_providers.py      # BaseProvider retry/rate-limiting template, Groq
+├── test_providers.py      # BaseProvider retry/rate-limiting template, Groq
+└── test_indexer.py        # AST extraction, type hints, tree, budgeting
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost --help`.
 
 ---
 
@@ -91,7 +93,7 @@ abstract method and was a silent no-op). Model IDs fetched **live** — every ID
 hardcoded in the original is dead today. Virtual-scheduling rate limiter that is
 correct under concurrency.
 
-### ⬜ Stage 3 — AST project indexing
+### ✅ Stage 3 — AST project indexing
 **Adds:** `ghost index --show`
 Static analysis with `ast`: function signatures *with type hints*, classes,
 methods, docstrings. Keyed by path, not basename (the original collided on two

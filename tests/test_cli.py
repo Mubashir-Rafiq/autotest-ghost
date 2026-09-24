@@ -7,6 +7,7 @@ file runs in milliseconds.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -187,3 +188,40 @@ def test_models_command_success_with_live_mock(monkeypatch: pytest.MonkeyPatch) 
     assert "Available models" in result.output
     assert "openai/gpt-oss-120b" in result.output
     assert "openai/gpt-oss-20b" in result.output
+
+
+def test_index_command_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("def hello(name: str) -> str: pass\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["index"])
+    assert result.exit_code == 0
+    assert "Indexed 1 file(s)" in result.output
+    assert (tmp_path / ".ghost" / "context.json").is_file()
+
+
+def test_index_command_show(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "def greet() -> None:\n    '''Say hi.'''\n    pass\n", encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(cli, ["index", "--show"])
+    assert result.exit_code == 0
+    assert "Ghost AST Project Index" in result.output
+    assert "app.py" in result.output
+    assert "greet() -> None" in result.output
+
+
+def test_index_command_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("def add(a: int, b: int) -> int: pass\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["index", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert "app.py" in data
+    assert "add(a: int, b: int) -> int" in data["app.py"]
