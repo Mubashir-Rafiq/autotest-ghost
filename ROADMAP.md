@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 11 of 13 stages complete.**
+**Progress: 12 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -21,8 +21,9 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 8 | Debounce + job queue | ✅ **done** | — |
 | 9 | File watcher | ✅ **done** | — |
 | 10 | **CLI completion** | ✅ **done** | — |
-| 11 | Daemon | ⬜ next | — |
-| 12 | Console + end-to-end | ⬜ pending | — |
+| 11 | Daemon | ✅ **done** | — |
+| 12 | Console + end-to-end | ⬜ next | — |
+
 
 
 ---
@@ -159,7 +160,7 @@ JetBrains IDEs, or a formatter.
 The init wizard (using live model listings), structured exit codes, full
 `CliRunner` coverage.
 
-### ⬜ Stage 11 — Daemon
+### ✅ Stage 11 — Daemon
 Background process management: `flock`-based PID file (immune to PID reuse),
 asyncio signal handling, non-blocking log rotation, and a documented nine-step
 shutdown sequence.
