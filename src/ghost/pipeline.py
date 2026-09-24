@@ -31,6 +31,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ghost.change_tracker import ChangeTracker
 from ghost.client import (
     JudgeOutcome,
     LLMClient,
@@ -64,6 +65,7 @@ class PipelineStatus(StrEnum):
     FAILED = "FAILED"
     BUG_IN_CODE = "BUG_IN_CODE"
     UNCLEAR = "UNCLEAR"
+    SKIPPED = "SKIPPED"
     ABORTED = "ABORTED"
 
 
@@ -80,6 +82,7 @@ class PipelineEvent(StrEnum):
     JUDGING = "judging"
     JUDGE_RESULT = "judge_result"
     GIVE_UP = "give_up"
+    SKIPPED = "skipped"
 
 
 class PipelineListener:
@@ -169,6 +172,7 @@ class TestPipeline:
         project_root: Path,
         client: LLMClient | None = None,
         runner_fn: RunnerFn | None = None,
+        tracker: ChangeTracker | None = None,
     ) -> None:
         self.config = config
         self.project_root = project_root
@@ -178,6 +182,7 @@ class TestPipeline:
             provider = get_provider(config.ai.provider, config=config)
             self.client = LLMClient(provider=provider, config=config)
         self._runner_fn: RunnerFn = runner_fn or run_test
+        self.tracker = tracker or ChangeTracker(project_root)
 
     async def _ensure_test_file(
         self,
@@ -342,6 +347,16 @@ class TestPipeline:
 
         return (True, None)
 
+    async def _finish(
+        self,
+        result: PipelineResult,
+        source_path: Path,
+        source_code: str,
+    ) -> PipelineResult:
+        if result.status not in (PipelineStatus.SKIPPED, PipelineStatus.ABORTED):
+            await self.tracker.amark_processed(source_path, source_code)
+        return result
+
     async def run(
         self,
         source_file: Path,
@@ -349,6 +364,7 @@ class TestPipeline:
         custom_output: Path | None = None,
         force: bool = False,
         force_generate: bool = False,
+        if_changed: bool = False,
         auto_heal: bool | None = None,
         use_judge: bool | None = None,
         max_heal_attempts: int | None = None,
@@ -365,6 +381,25 @@ class TestPipeline:
             output_dir=self.config.tests.output_dir,
             custom_output=custom_output,
         )
+
+        source_code = await asyncio.to_thread(resolved_src.read_text, encoding="utf-8")
+
+        if if_changed:
+            has_changed = await self.tracker.ahas_changed(resolved_src, source_code)
+            if not has_changed:
+                _emit(
+                    listener,
+                    PipelineEvent.SKIPPED,
+                    {"source_file": resolved_src, "test_file": test_path},
+                )
+                return PipelineResult(
+                    source_file=resolved_src,
+                    test_file=test_path,
+                    status=PipelineStatus.SKIPPED,
+                    passed=True,
+                    attempts=0,
+                    error_message="Source file unchanged; pipeline skipped.",
+                )
 
         effective_auto_heal = self.config.tests.auto_heal if auto_heal is None else auto_heal
         effective_use_judge = self.config.tests.use_judge if use_judge is None else use_judge
@@ -405,14 +440,18 @@ class TestPipeline:
                     {"attempt": attempt, "test_file": test_path, "run_result": last_run},
                 )
                 status = PipelineStatus.HEALED if attempt > 0 else PipelineStatus.PASSED
-                return PipelineResult(
-                    source_file=resolved_src,
-                    test_file=test_path,
-                    status=status,
-                    passed=True,
-                    attempts=attempt,
-                    last_run=last_run,
-                    judge_outcome=judge_outcome,
+                return await self._finish(
+                    PipelineResult(
+                        source_file=resolved_src,
+                        test_file=test_path,
+                        status=status,
+                        passed=True,
+                        attempts=attempt,
+                        last_run=last_run,
+                        judge_outcome=judge_outcome,
+                    ),
+                    resolved_src,
+                    source_code,
                 )
 
             _emit(
@@ -434,15 +473,19 @@ class TestPipeline:
                 )
                 judge_outcome = j_outcome
                 if term_status is not None:
-                    return PipelineResult(
-                        source_file=resolved_src,
-                        test_file=test_path,
-                        status=term_status,
-                        passed=False,
-                        attempts=attempt,
-                        last_run=last_run,
-                        judge_outcome=judge_outcome,
-                        error_message=err_msg,
+                    return await self._finish(
+                        PipelineResult(
+                            source_file=resolved_src,
+                            test_file=test_path,
+                            status=term_status,
+                            passed=False,
+                            attempts=attempt,
+                            last_run=last_run,
+                            judge_outcome=judge_outcome,
+                            error_message=err_msg,
+                        ),
+                        resolved_src,
+                        source_code,
                     )
 
             can_heal, reason = self._check_heal_budget(
@@ -452,15 +495,19 @@ class TestPipeline:
                 listener=listener,
             )
             if not can_heal:
-                return PipelineResult(
-                    source_file=resolved_src,
-                    test_file=test_path,
-                    status=PipelineStatus.FAILED,
-                    passed=False,
-                    attempts=attempt,
-                    last_run=last_run,
-                    judge_outcome=judge_outcome,
-                    error_message=reason,
+                return await self._finish(
+                    PipelineResult(
+                        source_file=resolved_src,
+                        test_file=test_path,
+                        status=PipelineStatus.FAILED,
+                        passed=False,
+                        attempts=attempt,
+                        last_run=last_run,
+                        judge_outcome=judge_outcome,
+                        error_message=reason,
+                    ),
+                    resolved_src,
+                    source_code,
                 )
 
             attempt += 1
@@ -474,13 +521,17 @@ class TestPipeline:
                 listener=listener,
             )
             if not heal_ok:
-                return PipelineResult(
-                    source_file=resolved_src,
-                    test_file=test_path,
-                    status=PipelineStatus.FAILED,
-                    passed=False,
-                    attempts=attempt,
-                    last_run=last_run,
-                    judge_outcome=judge_outcome,
-                    error_message=heal_err,
+                return await self._finish(
+                    PipelineResult(
+                        source_file=resolved_src,
+                        test_file=test_path,
+                        status=PipelineStatus.FAILED,
+                        passed=False,
+                        attempts=attempt,
+                        last_run=last_run,
+                        judge_outcome=judge_outcome,
+                        error_message=heal_err,
+                    ),
+                    resolved_src,
+                    source_code,
                 )

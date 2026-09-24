@@ -387,3 +387,36 @@ def test_generate_command_failure_exits_one(
     assert result.exit_code == 1
     assert "FAIL:" in result.output
     assert "healing budget exhausted" in result.output
+
+
+def test_generate_command_if_changed_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "calc.py").write_text("def add(a, b): return a + b\n", encoding="utf-8")
+
+    test_file = tmp_path / "tests" / "test_calc.py"
+
+    async def mock_run(self: TestPipeline, *args: Any, **kwargs: Any) -> PipelineResult:
+        if kwargs.get("if_changed"):
+            return PipelineResult(
+                source_file=tmp_path / "calc.py",
+                test_file=test_file,
+                status=PipelineStatus.SKIPPED,
+                passed=True,
+                attempts=0,
+            )
+        return PipelineResult(
+            source_file=tmp_path / "calc.py",
+            test_file=test_file,
+            status=PipelineStatus.PASSED,
+            passed=True,
+            attempts=0,
+        )
+
+    monkeypatch.setattr(TestPipeline, "run", mock_run)
+
+    result = CliRunner().invoke(cli, ["generate", "calc.py", "--force", "--if-changed"])
+    assert result.exit_code == 0
+    assert "SKIPPED: calc.py is unchanged (--if-changed)." in result.output

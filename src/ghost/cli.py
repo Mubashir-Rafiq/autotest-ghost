@@ -47,6 +47,7 @@ from ghost.pipeline import (
     PipelineEvent,
     PipelineListener,
     PipelineResult,
+    PipelineStatus,
     TestPipeline,
     resolve_test_path,
 )
@@ -424,6 +425,13 @@ class CliPipelineListener(PipelineListener):
     help="Enable or disable the Judge safety valve for logic errors.",
 )
 @click.option(
+    "--if-changed",
+    "if_changed",
+    is_flag=True,
+    default=False,
+    help="Skip test generation if source file content has not changed since last processed run.",
+)
+@click.option(
     "--timeout",
     type=float,
     default=None,
@@ -434,6 +442,7 @@ def generate_cmd(
     output: Path | None = None,
     *,
     force: bool = False,
+    if_changed: bool = False,
     auto_heal: bool | None = None,
     use_judge: bool | None = None,
     timeout: float | None = None,
@@ -465,12 +474,17 @@ def generate_cmd(
             custom_output=output,
             force=force,
             force_generate=True,
+            if_changed=if_changed,
             auto_heal=auto_heal,
             use_judge=use_judge,
             timeout_seconds=timeout,
             listener=listener,
         )
     )
+
+    if result.status == PipelineStatus.SKIPPED:
+        click.echo(f"SKIPPED: {resolved_file.name} is unchanged (--if-changed).")
+        return
 
     if result.passed:
         if result.attempts > 0:

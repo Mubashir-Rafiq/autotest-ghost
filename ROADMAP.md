@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 7 of 13 stages complete.**
+**Progress: 8 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -17,8 +17,8 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 4 | Prompts + LLM client | ✅ **done** | — |
 | 5 | Test runner + classification | ✅ **done** | — |
 | 6 | The pipeline | ✅ **done** | — |
-| 7 | **Change tracking** | ⬜ next | — |
-| 8 | Debounce + job queue | ⬜ pending | — |
+| 7 | Change tracking | ✅ **done** | — |
+| 8 | **Debounce + job queue** | ⬜ next | — |
 | 9 | File watcher | ⬜ pending | — |
 | 10 | CLI completion | ⬜ pending | — |
 | 11 | Daemon | ⬜ pending | — |
@@ -56,6 +56,7 @@ src/ghost/
 ├── pytest_plugin.py   # first-party pytest plugin extracting true exception classes
 ├── runner.py          # subprocess test runner with timeout and classification
 ├── pipeline.py        # unified generate -> run -> classify -> heal -> judge state machine
+├── change_tracker.py  # SHA-256 content cache, atomic persistence, path keys
 └── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate
 tests/
 ├── conftest.py            # shared fixtures
@@ -68,10 +69,11 @@ tests/
 ├── test_prompts.py        # pure prompt generation and golden-file contracts
 ├── test_client.py         # LLM client, AST validation, overwrite protection
 ├── test_runner.py         # subprocess runner, timeouts, and error classification
-└── test_pipeline.py       # unified pipeline, healing loop, judge safety valve
+├── test_pipeline.py       # unified pipeline, healing loop, judge safety valve
+└── test_change_tracker.py # SHA-256 caching, atomic replace, fail-open invariants
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE [--if-changed]`, `ghost --help`.
 
 ---
 
@@ -128,7 +130,7 @@ The generate → run → classify → heal → judge state machine, implemented 
 The original implemented it twice and the copies drifted, which is this
 project's defining bug. Refuses to overwrite hand-written test files.
 
-### ⬜ Stage 7 — Change tracking
+### ✅ Stage 7 — Change tracking
 **Adds:** `--if-changed`
 SHA-256 content cache that skips the pipeline for unchanged saves. Recorded only
 *after* the pipeline completes, and never on cancellation, so a crash cannot be

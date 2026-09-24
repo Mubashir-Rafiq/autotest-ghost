@@ -24,6 +24,6 @@ layers =
     ghost.pytest_plugin
     ghost.client
     ghost.prompts
-    ghost.providers | ghost.indexer
+    ghost.providers | ghost.indexer | ghost.change_tracker
     ghost.config | ghost.rate_limiter
     ghost.errors
