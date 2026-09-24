@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 5 of 13 stages complete.**
+**Progress: 6 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -15,8 +15,8 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 2 | Providers + rate limiting | ✅ **done** | — |
 | 3 | AST project indexing | ✅ **done** | — |
 | 4 | Prompts + LLM client | ✅ **done** | — |
-| 5 | Test runner + classification | ⬜ next | — |
-| 6 | **The pipeline** | ⬜ pending | — |
+| 5 | Test runner + classification | ✅ **done** | — |
+| 6 | **The pipeline** | ⬜ next | — |
 | 7 | Change tracking | ⬜ pending | — |
 | 8 | Debounce + job queue | ⬜ pending | — |
 | 9 | File watcher | ⬜ pending | — |
@@ -53,7 +53,9 @@ src/ghost/
 ├── indexer.py         # AST static analysis, shared ignore logic, budgeting
 ├── prompts.py         # pure prompt templates and deterministic construction
 ├── client.py          # LLM client, response validation, judge evaluation
-└── cli.py             # command group: version, doctor, config, providers, models, index, prompt
+├── pytest_plugin.py   # first-party pytest plugin extracting true exception classes
+├── runner.py          # subprocess test runner with timeout and classification
+└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
@@ -63,10 +65,11 @@ tests/
 ├── test_providers.py      # BaseProvider retry/rate-limiting template, Groq
 ├── test_indexer.py        # AST extraction, type hints, tree, budgeting
 ├── test_prompts.py        # pure prompt generation and golden-file contracts
-└── test_client.py         # LLM client, AST validation, overwrite protection
+├── test_client.py         # LLM client, AST validation, overwrite protection
+└── test_runner.py         # subprocess runner, timeouts, and error classification
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost --help`.
 
 ---
 
@@ -110,7 +113,7 @@ Prompts as pure functions with golden-file tests. Generated code is validated
 with `ast.parse` before being written to disk. A third judge outcome,
 `UNCLEAR`, which never heals — the original had no branch for it.
 
-### ⬜ Stage 5 — Test runner + classification
+### ✅ Stage 5 — Test runner + classification
 **Adds:** `ghost run-tests TEST_FILE`
 `asyncio.create_subprocess_exec` with a real timeout, process-group kill, and
 zombie reaping (the original had no timeout at all — a generated infinite loop

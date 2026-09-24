@@ -38,6 +38,7 @@ from ghost.providers import (
     get_provider,
     list_available_providers,
 )
+from ghost.runner import TestRunResult, run_test
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine, Sequence
@@ -322,6 +323,33 @@ def prompt_cmd(file: Path) -> None:
         framework=config.tests.framework,
     )
     click.echo(prompt)
+
+
+@cli.command("run-tests")
+@click.argument("test_file", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--timeout", type=float, default=None, help="Execution timeout in seconds.")
+def run_tests_cmd(test_file: Path, timeout: float | None = None) -> None:
+    """Run a test file in an isolated subprocess and report structured results."""
+    resolved_test = test_file.resolve()
+    project_root = find_project_root(resolved_test) or resolved_test.parent
+    config = load_config(project_root)
+
+    effective_timeout = (
+        timeout if timeout is not None else getattr(config.tests, "timeout_seconds", 30.0)
+    )
+    result: TestRunResult = _run_async(
+        run_test(resolved_test, project_root, timeout_seconds=effective_timeout)
+    )
+
+    if result.passed:
+        click.echo(f"PASS: {test_file}")
+    else:
+        click.echo(f"FAIL ({result.classification}): {test_file}")
+        if result.timed_out:
+            click.echo(f"  Execution timed out after {effective_timeout:.1f}s.")
+        elif result.exception_type:
+            click.echo(f"  {result.exception_type}: {result.message}")
+        raise SystemExit(1)
 
 
 def _system_exit_code(exc: SystemExit) -> int:

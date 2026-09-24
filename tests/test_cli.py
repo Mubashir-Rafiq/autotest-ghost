@@ -240,3 +240,26 @@ def test_prompt_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert "SOURCE CODE UNDER TEST (`app.py`):" in result.output
     assert "def multiply(x: int, y: int) -> int:" in result.output
     assert "PROJECT TREE:" in result.output
+
+
+def test_run_tests_command_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    test_f = tmp_path / "test_ok.py"
+    test_f.write_text("def test_ok(): assert True\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["run-tests", "test_ok.py"])
+    assert result.exit_code == 0
+    assert "PASS: test_ok.py" in result.output
+
+
+def test_run_tests_command_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    test_f = tmp_path / "test_bad.py"
+    test_f.write_text("def test_bad(): assert 1 == 2\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["run-tests", "test_bad.py"])
+    assert result.exit_code != 0
+    assert "FAIL (LOGIC): test_bad.py" in result.output
+    assert "AssertionError" in result.output

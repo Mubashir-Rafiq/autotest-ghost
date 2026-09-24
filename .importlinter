@@ -19,6 +19,8 @@ name = Ghost layered architecture
 type = layers
 layers =
     ghost.cli
+    ghost.runner
+    ghost.pytest_plugin
     ghost.client
     ghost.prompts
     ghost.providers | ghost.indexer

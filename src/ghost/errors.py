@@ -37,6 +37,7 @@ __all__ = [
     "ProviderError",
     "ProviderRateLimitError",
     "ProviderUnavailableError",
+    "TestTimeoutError",
     "UnparseableCodeError",
 ]
 
@@ -146,3 +147,12 @@ class HandwrittenTestOverwriteError(GhostError):
         super().__init__(
             f"refusing to overwrite hand-written test file '{test_file}'. Use --force to overwrite."
         )
+
+
+class TestTimeoutError(GhostError):
+    """Test execution exceeded the configured timeout limit."""
+
+    def __init__(self, test_file: Path | str, timeout: float) -> None:
+        self.test_file = test_file
+        self.timeout = timeout
+        super().__init__(f"test execution of {test_file} timed out after {timeout:.1f}s.")
