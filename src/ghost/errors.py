@@ -37,8 +37,10 @@ __all__ = [
     "ProviderError",
     "ProviderRateLimitError",
     "ProviderUnavailableError",
+    "SourceFileNotFoundError",
     "TestTimeoutError",
     "UnparseableCodeError",
+    "UnsupportedFileError",
 ]
 
 
@@ -156,3 +158,21 @@ class TestTimeoutError(GhostError):
         self.test_file = test_file
         self.timeout = timeout
         super().__init__(f"test execution of {test_file} timed out after {timeout:.1f}s.")
+
+
+class SourceFileNotFoundError(GhostError):
+    """The specified source file does not exist."""
+
+    def __init__(self, path: Path | str) -> None:
+        self.path = path
+        super().__init__(f"source file '{path}' does not exist.")
+
+
+class UnsupportedFileError(GhostError):
+    """The file is not a supported file type (e.g. not a Python file)."""
+
+    def __init__(
+        self, path: Path | str, reason: str = "only Python (.py) files are supported"
+    ) -> None:
+        self.path = path
+        super().__init__(f"cannot process '{path}': {reason}")

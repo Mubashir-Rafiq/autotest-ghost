@@ -19,6 +19,7 @@ name = Ghost layered architecture
 type = layers
 layers =
     ghost.cli
+    ghost.pipeline
     ghost.runner
     ghost.pytest_plugin
     ghost.client

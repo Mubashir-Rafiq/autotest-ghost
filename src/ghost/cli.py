@@ -26,12 +26,30 @@ from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    from typing_extensions import override
+
 import click
 
 from ghost import __version__
+from ghost.client import is_ghost_managed_test
 from ghost.config import find_project_root, load_config
-from ghost.errors import ConfigError, GhostError, ProjectNotInitializedError
+from ghost.errors import (
+    ConfigError,
+    GhostError,
+    HandwrittenTestOverwriteError,
+    ProjectNotInitializedError,
+)
 from ghost.indexer import budget_context, get_project_tree, walk_and_generate_json
+from ghost.pipeline import (
+    PipelineEvent,
+    PipelineListener,
+    PipelineResult,
+    TestPipeline,
+    resolve_test_path,
+)
 from ghost.prompts import build_generation_prompt
 from ghost.providers import (
     POPULAR_MODELS,
@@ -349,6 +367,120 @@ def run_tests_cmd(test_file: Path, timeout: float | None = None) -> None:
             click.echo(f"  Execution timed out after {effective_timeout:.1f}s.")
         elif result.exception_type:
             click.echo(f"  {result.exception_type}: {result.message}")
+        raise SystemExit(1)
+
+
+class CliPipelineListener(PipelineListener):
+    """Terminal listener printing progress messages to stdout."""
+
+    @override
+    def on_event(self, event: PipelineEvent, data: dict[str, Any]) -> None:
+        if event == PipelineEvent.GENERATING:
+            src = data.get("source_file")
+            click.echo(f"Generating tests for {Path(src).name if src else 'source'}...")
+        elif event == PipelineEvent.RUNNING:
+            attempt = data.get("attempt", 0)
+            if attempt > 0:
+                click.echo(f"Re-running test (attempt {attempt})...")
+            else:
+                click.echo("Running tests...")
+        elif event == PipelineEvent.HEALING:
+            attempt = data.get("attempt", 1)
+            cls_name = data.get("classification", "UNKNOWN")
+            click.echo(f"Healing test failure ({cls_name}, attempt {attempt})...")
+        elif event == PipelineEvent.JUDGING:
+            click.echo("Assertion failure: consulting Judge...")
+        elif event == PipelineEvent.JUDGE_RESULT:
+            outcome = data.get("outcome")
+            click.echo(f"Judge evaluated failure as: {outcome}")
+
+
+@cli.command("generate")
+@click.argument("file", type=click.Path(path_type=Path, dir_okay=False))
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Custom output path for the generated test file.",
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing test file without confirmation.",
+)
+@click.option(
+    "--heal/--no-heal",
+    "auto_heal",
+    default=None,
+    help="Enable or disable self-healing of failing tests.",
+)
+@click.option(
+    "--judge/--no-judge",
+    "use_judge",
+    default=None,
+    help="Enable or disable the Judge safety valve for logic errors.",
+)
+@click.option(
+    "--timeout",
+    type=float,
+    default=None,
+    help="Execution timeout in seconds.",
+)
+def generate_cmd(
+    file: Path,
+    output: Path | None = None,
+    *,
+    force: bool = False,
+    auto_heal: bool | None = None,
+    use_judge: bool | None = None,
+    timeout: float | None = None,
+) -> None:
+    """Generate, run, and optionally heal tests for a single Python file."""
+    resolved_file = file.resolve()
+    project_root = find_project_root(resolved_file) or resolved_file.parent
+    config = load_config(project_root)
+
+    test_path = resolve_test_path(
+        resolved_file,
+        project_root,
+        output_dir=config.tests.output_dir,
+        custom_output=output,
+    )
+
+    if test_path.is_file() and not force:
+        if not is_ghost_managed_test(test_path):
+            raise HandwrittenTestOverwriteError(test_path)
+        if not click.confirm(f"Test file '{test_path}' already exists. Overwrite?", default=False):
+            click.echo("Generation cancelled.")
+            return
+
+    pipeline = TestPipeline(config=config, project_root=project_root)
+    listener = CliPipelineListener()
+    result: PipelineResult = _run_async(
+        pipeline.run(
+            resolved_file,
+            custom_output=output,
+            force=force,
+            force_generate=True,
+            auto_heal=auto_heal,
+            use_judge=use_judge,
+            timeout_seconds=timeout,
+            listener=listener,
+        )
+    )
+
+    if result.passed:
+        if result.attempts > 0:
+            click.echo(f"PASS (healed after {result.attempts} attempt(s)): {result.test_file}")
+        else:
+            click.echo(f"PASS: {result.test_file}")
+    else:
+        click.echo(f"FAIL: {result.test_file} ({result.status.value})")
+        if result.error_message:
+            click.echo(f"  {result.error_message}")
         raise SystemExit(1)
 
 

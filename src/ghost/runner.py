@@ -174,6 +174,8 @@ def _prepare_runner_environment(
 class TestRunResult:
     """Structured outcome of running a test file in a subprocess."""
 
+    __test__ = False
+
     test_file: Path
     passed: bool
     return_code: int

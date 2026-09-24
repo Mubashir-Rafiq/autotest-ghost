@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -19,6 +20,7 @@ from click.testing import CliRunner
 import ghost
 from ghost.cli import cli, main
 from ghost.errors import ConfigError, ProjectNotInitializedError
+from ghost.pipeline import PipelineResult, PipelineStatus, TestPipeline
 
 
 def test_bare_invocation_shows_help() -> None:
@@ -263,3 +265,125 @@ def test_run_tests_command_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert result.exit_code != 0
     assert "FAIL (LOGIC): test_bad.py" in result.output
     assert "AssertionError" in result.output
+
+
+def test_generate_command_help() -> None:
+    result = CliRunner().invoke(cli, ["generate", "--help"])
+    assert result.exit_code == 0
+    assert "--output" in result.output
+    assert "--force" in result.output
+    assert "--heal" in result.output
+    assert "--judge" in result.output
+    assert "--timeout" in result.output
+
+
+def test_generate_command_missing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+
+    code = main(["generate", "missing.py"])
+    assert code != 0
+    captured = capsys.readouterr()
+    assert "does not exist" in captured.err
+
+
+def test_generate_command_non_py_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("Hello\n", encoding="utf-8")
+
+    code = main(["generate", "notes.txt"])
+    assert code != 0
+    captured = capsys.readouterr()
+    assert "only Python (.py) files are supported" in captured.err
+
+
+def test_generate_command_handwritten_test_without_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "calc.py").write_text("def add(a, b): return a + b\n", encoding="utf-8")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_calc.py").write_text(
+        "# Human test\ndef test_add(): pass\n", encoding="utf-8"
+    )
+
+    code = main(["generate", "calc.py"])
+    assert code != 0
+    captured = capsys.readouterr()
+    assert "refusing to overwrite hand-written test file" in captured.err
+
+
+def test_generate_command_existing_ghost_test_prompt_declined(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "calc.py").write_text("def add(a, b): return a + b\n", encoding="utf-8")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_calc.py").write_text(
+        "# Generated at: 24-09-2026 12:00:00 | Source: calc.py\ndef test_add(): pass\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli, ["generate", "calc.py"], input="n\n")
+    assert result.exit_code == 0
+    assert "Generation cancelled" in result.output
+
+
+def test_generate_command_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "calc.py").write_text("def add(a, b): return a + b\n", encoding="utf-8")
+
+    test_file = tmp_path / "tests" / "test_calc.py"
+
+    async def mock_run(self: TestPipeline, *args: Any, **kwargs: Any) -> PipelineResult:
+        return PipelineResult(
+            source_file=tmp_path / "calc.py",
+            test_file=test_file,
+            status=PipelineStatus.PASSED,
+            passed=True,
+            attempts=0,
+        )
+
+    monkeypatch.setattr(TestPipeline, "run", mock_run)
+
+    result = CliRunner().invoke(cli, ["generate", "calc.py", "--force"])
+    assert result.exit_code == 0
+    assert "PASS:" in result.output
+    assert str(test_file) in result.output
+
+
+def test_generate_command_failure_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    (tmp_path / "broken.py").write_text("x = 1\n", encoding="utf-8")
+
+    test_file = tmp_path / "tests" / "test_broken.py"
+
+    async def mock_run(self: TestPipeline, *args: Any, **kwargs: Any) -> PipelineResult:
+        return PipelineResult(
+            source_file=tmp_path / "broken.py",
+            test_file=test_file,
+            status=PipelineStatus.FAILED,
+            passed=False,
+            attempts=3,
+            error_message="healing budget exhausted",
+        )
+
+    monkeypatch.setattr(TestPipeline, "run", mock_run)
+
+    result = CliRunner().invoke(cli, ["generate", "broken.py", "--force"])
+    assert result.exit_code == 1
+    assert "FAIL:" in result.output
+    assert "healing budget exhausted" in result.output

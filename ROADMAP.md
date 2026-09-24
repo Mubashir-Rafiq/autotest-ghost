@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 6 of 13 stages complete.**
+**Progress: 7 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -16,8 +16,8 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 3 | AST project indexing | ✅ **done** | — |
 | 4 | Prompts + LLM client | ✅ **done** | — |
 | 5 | Test runner + classification | ✅ **done** | — |
-| 6 | **The pipeline** | ⬜ next | — |
-| 7 | Change tracking | ⬜ pending | — |
+| 6 | The pipeline | ✅ **done** | — |
+| 7 | **Change tracking** | ⬜ next | — |
 | 8 | Debounce + job queue | ⬜ pending | — |
 | 9 | File watcher | ⬜ pending | — |
 | 10 | CLI completion | ⬜ pending | — |
@@ -55,7 +55,8 @@ src/ghost/
 ├── client.py          # LLM client, response validation, judge evaluation
 ├── pytest_plugin.py   # first-party pytest plugin extracting true exception classes
 ├── runner.py          # subprocess test runner with timeout and classification
-└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests
+├── pipeline.py        # unified generate -> run -> classify -> heal -> judge state machine
+└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
@@ -66,10 +67,11 @@ tests/
 ├── test_indexer.py        # AST extraction, type hints, tree, budgeting
 ├── test_prompts.py        # pure prompt generation and golden-file contracts
 ├── test_client.py         # LLM client, AST validation, overwrite protection
-└── test_runner.py         # subprocess runner, timeouts, and error classification
+├── test_runner.py         # subprocess runner, timeouts, and error classification
+└── test_pipeline.py       # unified pipeline, healing loop, judge safety valve
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE`, `ghost --help`.
 
 ---
 
@@ -120,7 +122,7 @@ zombie reaping (the original had no timeout at all — a generated infinite loop
 wedged it permanently). A first-party pytest plugin yields the true exception
 class, so classification is a lookup table rather than substring matching.
 
-### ⬜ Stage 6 — The pipeline
+### ✅ Stage 6 — The pipeline
 **Adds:** `ghost generate FILE`
 The generate → run → classify → heal → judge state machine, implemented **once**.
 The original implemented it twice and the copies drifted, which is this
