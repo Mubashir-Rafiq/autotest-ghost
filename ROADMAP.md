@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 4 of 13 stages complete.**
+**Progress: 5 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -14,8 +14,8 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 1 | Configuration | ✅ **done** | — |
 | 2 | Providers + rate limiting | ✅ **done** | — |
 | 3 | AST project indexing | ✅ **done** | — |
-| 4 | Prompts + LLM client | ⬜ next | — |
-| 5 | Test runner + classification | ⬜ pending | — |
+| 4 | Prompts + LLM client | ✅ **done** | — |
+| 5 | Test runner + classification | ⬜ next | — |
 | 6 | **The pipeline** | ⬜ pending | — |
 | 7 | Change tracking | ⬜ pending | — |
 | 8 | Debounce + job queue | ⬜ pending | — |
@@ -51,7 +51,9 @@ src/ghost/
 ├── rate_limiter.py    # GCRA rate limiting and backoff calculation
 ├── providers.py       # BaseProvider template method, GroqProvider, registry
 ├── indexer.py         # AST static analysis, shared ignore logic, budgeting
-└── cli.py             # command group: version, doctor, config, providers, models, index
+├── prompts.py         # pure prompt templates and deterministic construction
+├── client.py          # LLM client, response validation, judge evaluation
+└── cli.py             # command group: version, doctor, config, providers, models, index, prompt
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
@@ -59,10 +61,12 @@ tests/
 ├── test_config.py         # configuration loading, precedence, and validation
 ├── test_rate_limiter.py   # GCRA rate limiter scheduling and backoff
 ├── test_providers.py      # BaseProvider retry/rate-limiting template, Groq
-└── test_indexer.py        # AST extraction, type hints, tree, budgeting
+├── test_indexer.py        # AST extraction, type hints, tree, budgeting
+├── test_prompts.py        # pure prompt generation and golden-file contracts
+└── test_client.py         # LLM client, AST validation, overwrite protection
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost --help`.
 
 ---
 
@@ -100,7 +104,7 @@ methods, docstrings. Keyed by path, not basename (the original collided on two
 files sharing a name). Context budgeting so a large project cannot overflow the
 model's context window.
 
-### ⬜ Stage 4 — Prompts + LLM client
+### ✅ Stage 4 — Prompts + LLM client
 **Adds:** `ghost prompt FILE` (prints the prompt, makes no API call)
 Prompts as pure functions with golden-file tests. Generated code is validated
 with `ast.parse` before being written to disk. A third judge outcome,

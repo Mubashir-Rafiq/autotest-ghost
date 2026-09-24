@@ -31,7 +31,8 @@ import click
 from ghost import __version__
 from ghost.config import find_project_root, load_config
 from ghost.errors import ConfigError, GhostError, ProjectNotInitializedError
-from ghost.indexer import budget_context, walk_and_generate_json
+from ghost.indexer import budget_context, get_project_tree, walk_and_generate_json
+from ghost.prompts import build_generation_prompt
 from ghost.providers import (
     POPULAR_MODELS,
     get_provider,
@@ -284,18 +285,43 @@ def index_cmd(
 
     if as_json:
         click.echo(json.dumps(index_data, indent=2, sort_keys=True))
-        return
-
-    if _show:
+    elif _show:
         click.echo(f"Ghost AST Project Index: {project_root.name} ({len(index_data)} files)")
         click.echo("=" * 60)
         for file_key, summary in sorted(index_data.items()):
-            click.echo(f"\n{file_key}")
-            click.echo(f"  {summary}")
-        return
+            click.echo(f"\n{file_key}\n  {summary}")
+    else:
+        click.echo(f"Indexed {len(index_data)} file(s) in {project_root} -> .ghost/context.json")
+        click.echo("Use 'ghost index --show' to view the indexed symbols.")
 
-    click.echo(f"Indexed {len(index_data)} file(s) in {project_root} -> .ghost/context.json")
-    click.echo("Use 'ghost index --show' to view the indexed symbols.")
+
+@cli.command("prompt")
+@click.argument("file", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+def prompt_cmd(file: Path) -> None:
+    """Print the test generation prompt for a source file without making an API call."""
+    resolved_file = file.resolve()
+    project_root = find_project_root(resolved_file) or resolved_file.parent
+    config = load_config(project_root)
+
+    source_code = resolved_file.read_text(encoding="utf-8")
+    rel_path = (
+        resolved_file.relative_to(project_root).as_posix()
+        if project_root in resolved_file.parents
+        else resolved_file.name
+    )
+
+    tree_str = get_project_tree(project_root, config.scanner)
+    index = walk_and_generate_json(project_root, scanner_config=config.scanner)
+    budgeted = budget_context(index, target_file=rel_path, root=project_root)
+
+    prompt = build_generation_prompt(
+        source_code=source_code,
+        source_path=rel_path,
+        project_tree=tree_str,
+        context=budgeted,
+        framework=config.tests.framework,
+    )
+    click.echo(prompt)
 
 
 def _system_exit_code(exc: SystemExit) -> int:

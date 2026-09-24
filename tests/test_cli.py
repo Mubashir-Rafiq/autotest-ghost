@@ -225,3 +225,18 @@ def test_index_command_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     data = json.loads(result.output)
     assert "app.py" in data
     assert "add(a: int, b: int) -> int" in data["app.py"]
+
+
+def test_prompt_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ghost prompt FILE prints the prompt without making an API call."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+    src = tmp_path / "app.py"
+    src.write_text("def multiply(x: int, y: int) -> int: return x * y\n", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["prompt", "app.py"])
+    assert result.exit_code == 0
+    assert "Output RAW PYTHON CODE ONLY" in result.output
+    assert "SOURCE CODE UNDER TEST (`app.py`):" in result.output
+    assert "def multiply(x: int, y: int) -> int:" in result.output
+    assert "PROJECT TREE:" in result.output
