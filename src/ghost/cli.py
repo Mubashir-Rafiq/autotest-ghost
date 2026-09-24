@@ -18,8 +18,11 @@ lines, something has leaked into it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import platform
+import re
 import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
@@ -35,9 +38,24 @@ import click
 
 from ghost import __version__
 from ghost.client import is_ghost_managed_test
-from ghost.config import find_project_root, load_config, write_default_config
+from ghost.config import (
+    _PROVIDER_ENV_VARS,
+    find_project_root,
+    generate_default_config,
+    load_config,
+    write_default_config,
+)
+from ghost.daemon import (
+    daemon_log_path,
+    follow_log_stream,
+    query_daemon_status,
+    start_daemon,
+    stop_daemon,
+    tail_log,
+)
 from ghost.errors import (
     ConfigError,
+    ExitCode,
     GhostError,
     HandwrittenTestOverwriteError,
     ProjectNotInitializedError,
@@ -88,6 +106,22 @@ _OPTIONAL_DISTRIBUTIONS: Final[tuple[str, ...]] = (
 _OK: Final = "ok"
 _MISSING: Final = "MISSING"
 
+_INIT_PROVIDER_CHOICES: Final[tuple[str, ...]] = (
+    "groq",
+    "openai",
+    "ollama",
+    "anthropic",
+    "openrouter",
+)
+
+_PROVIDER_DEFAULT_MODELS: Final[dict[str, str]] = {
+    "groq": "openai/gpt-oss-120b",
+    "openai": "gpt-4o",
+    "ollama": "llama3:latest",
+    "anthropic": "claude-sonnet-4-20250514",
+    "openrouter": "openai/gpt-4o",
+}
+
 
 def _installed_version(distribution: str) -> str | None:
     """Return the installed version of *distribution*, or ``None`` if absent."""
@@ -95,6 +129,84 @@ def _installed_version(distribution: str) -> str | None:
         return distribution_version(distribution)
     except PackageNotFoundError:
         return None
+
+
+def _detect_default_provider() -> str:
+    """Auto-detect the most likely configured provider from environment variables."""
+    for prov in ("groq", "openai", "anthropic", "openrouter"):
+        for var in _PROVIDER_ENV_VARS.get(prov, ()):
+            if os.environ.get(var):
+                return prov
+    if os.environ.get("GHOST_API_KEY"):
+        return "groq"
+    return "groq"
+
+
+def _offer_save_to_env(project_root: Path, var_name: str, key_value: str) -> None:
+    """Offer to save an API key to the project's .env file."""
+    if click.confirm(f"Save {var_name} to .env?", default=True):
+        env_file = project_root / ".env"
+        line = f"{var_name}={key_value}\n"
+        if env_file.is_file():
+            existing = env_file.read_text(encoding="utf-8")
+            if var_name in existing:
+                updated = re.sub(
+                    rf"^{re.escape(var_name)}=.*$",
+                    f"{var_name}={key_value}",
+                    existing,
+                    flags=re.MULTILINE,
+                )
+                env_file.write_text(updated, encoding="utf-8")
+            else:
+                with env_file.open("a", encoding="utf-8") as f:
+                    f.write(line)
+        else:
+            env_file.write_text(line, encoding="utf-8")
+        click.echo(f"Saved {var_name} to {env_file}")
+    else:
+        click.echo(f"You can set it manually: export {var_name}=<your-key>")
+
+
+def _resolve_init_provider(provider: str) -> str:
+    """Prompt the user for the provider choice, prefilled with auto/passed default."""
+    default_provider = (
+        _detect_default_provider() if provider.lower() == "auto" else provider.lower()
+    )
+    return click.prompt(
+        "AI provider",
+        type=click.Choice(_INIT_PROVIDER_CHOICES, case_sensitive=False),
+        default=default_provider,
+    ).lower()
+
+
+def _handle_init_api_key(target: Path, chosen_provider: str) -> None:
+    """Detect or prompt for provider API key during init."""
+    env_vars = _PROVIDER_ENV_VARS.get(chosen_provider, ("GHOST_API_KEY",))
+    existing_key: str | None = None
+    existing_var: str | None = None
+    for var in env_vars:
+        val = os.environ.get(var)
+        if val and val.strip():
+            existing_key = val.strip()
+            existing_var = var
+            break
+
+    if existing_key:
+        masked = existing_key[:4] + "*" * max(0, len(existing_key) - 4)
+        click.echo(f"Found API key in ${existing_var}: {masked}")
+        if not click.confirm("Use this key?", default=True):
+            new_key = click.prompt("Enter API key", hide_input=True)
+            if new_key.strip():
+                _offer_save_to_env(target, env_vars[0], new_key.strip())
+    elif chosen_provider not in {"ollama", "lmstudio"}:
+        new_key = click.prompt(
+            f"Enter {env_vars[0]} (or press Enter to skip)",
+            default="",
+            show_default=False,
+            hide_input=True,
+        )
+        if new_key.strip():
+            _offer_save_to_env(target, env_vars[0], new_key.strip())
 
 
 @click.group(invoke_without_command=True)
@@ -112,6 +224,75 @@ def version() -> None:
     click.echo(f"ghost   {__version__}")
     click.echo(f"python  {platform.python_version()} ({sys.executable})")
     click.echo(f"system  {platform.system()} {platform.release()}")
+
+
+@cli.command("init")
+@click.argument(
+    "path",
+    type=click.Path(path_type=Path, exists=False),
+    required=False,
+    default=None,
+)
+@click.option(
+    "--provider",
+    "-p",
+    type=click.Choice([*_INIT_PROVIDER_CHOICES, "auto"], case_sensitive=False),
+    default="auto",
+    help="AI provider to use (default: auto).",
+)
+@click.option(
+    "--model",
+    "-m",
+    default=None,
+    help="Model to use (default: provider default).",
+)
+@click.option(
+    "--framework",
+    "-f",
+    type=click.Choice(["pytest", "unittest"], case_sensitive=False),
+    default="pytest",
+    help="Test framework (default: pytest).",
+)
+def init_cmd(
+    path: Path | None = None,
+    provider: str = "auto",
+    model: str | None = None,
+    framework: str = "pytest",
+) -> None:
+    """Initialize a new Ghost project with interactive wizard."""
+    target = (path or Path.cwd()).resolve()
+    config_file = target / "ghost.toml"
+
+    if config_file.is_file() and not click.confirm(
+        f"ghost.toml already exists at {config_file}. Overwrite?", default=False
+    ):
+        click.echo("Init cancelled.")
+        return
+
+    chosen_provider = _resolve_init_provider(provider)
+    _handle_init_api_key(target, chosen_provider)
+
+    default_model = _PROVIDER_DEFAULT_MODELS.get(chosen_provider, "openai/gpt-oss-120b")
+    chosen_model = model or click.prompt("Model", default=default_model)
+
+    content = generate_default_config(
+        name=target.name,
+        provider=chosen_provider,
+        model=chosen_model,
+        framework=framework,
+    )
+    config_file.write_text(content, encoding="utf-8")
+    click.echo(f"Created {config_file}")
+
+    ghost_dir = target / ".ghost"
+    ghost_dir.mkdir(parents=True, exist_ok=True)
+
+    config = load_config(target)
+    index = walk_and_generate_json(target, scanner_config=config.scanner)
+    context_file = ghost_dir / "context.json"
+    context_file.write_text(json.dumps(index, indent=2, sort_keys=True), encoding="utf-8")
+    click.echo(f"Indexed {len(index)} file(s) -> {context_file}")
+    click.echo("Ghost initialized. Run 'ghost watch' to start.")
 
 
 @cli.command()
@@ -598,11 +779,137 @@ def watch_cmd(
         click.echo("Watcher stopped.")
 
 
+@cli.command("start")
+@click.argument(
+    "path",
+    type=click.Path(path_type=Path, exists=False),
+    required=False,
+    default=None,
+)
+@click.option(
+    "--detach/--foreground",
+    default=True,
+    help="Run as a background daemon (default) or in foreground.",
+)
+def start_cmd(path: Path | None = None, *, detach: bool = True) -> None:
+    """Start the Ghost watcher daemon."""
+    target = (path or Path.cwd()).resolve()
+    project_root = find_project_root(target) or target
+
+    config_file = project_root / "ghost.toml"
+    if not config_file.is_file():
+        raise ProjectNotInitializedError(target)
+
+    if not detach:
+        ctx = click.get_current_context()
+        ctx.invoke(watch_cmd, path=path)
+        return
+
+    try:
+        pid = start_daemon(project_root)
+    except RuntimeError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(ExitCode.ERROR) from exc
+
+    click.echo(f"Ghost daemon started (PID {pid}).")
+    click.echo(f"Logs: {daemon_log_path(project_root)}")
+
+
+@cli.command("stop")
+@click.argument(
+    "path",
+    type=click.Path(path_type=Path, exists=False),
+    required=False,
+    default=None,
+)
+def stop_cmd(path: Path | None = None) -> None:
+    """Stop the Ghost watcher daemon."""
+    target = (path or Path.cwd()).resolve()
+    project_root = find_project_root(target) or target
+
+    stopped = stop_daemon(project_root)
+    if stopped:
+        click.echo("Ghost daemon stopped.")
+    else:
+        click.echo("No daemon is running.")
+
+
+@cli.command("status")
+@click.argument(
+    "path",
+    type=click.Path(path_type=Path, exists=False),
+    required=False,
+    default=None,
+)
+def status_cmd(path: Path | None = None) -> None:
+    """Report whether the Ghost daemon is running."""
+    target = (path or Path.cwd()).resolve()
+    project_root = find_project_root(target) or target
+
+    status = query_daemon_status(project_root)
+    if status.running:
+        click.echo(f"Ghost daemon is running (PID {status.pid}).")
+    else:
+        click.echo("Ghost daemon is not running.")
+
+    if status.log_tail:
+        click.echo("\nRecent log:")
+        for line in status.log_tail:
+            click.echo(f"  {line}")
+
+
+@cli.command("logs")
+@click.argument(
+    "path",
+    type=click.Path(path_type=Path, exists=False),
+    required=False,
+    default=None,
+)
+@click.option(
+    "--follow",
+    "-f",
+    is_flag=True,
+    default=False,
+    help="Continuously follow the log file.",
+)
+@click.option(
+    "--lines",
+    "-n",
+    type=int,
+    default=20,
+    help="Number of lines to show (default 20).",
+)
+def logs_cmd(
+    path: Path | None = None,
+    *,
+    follow: bool = False,
+    lines: int = 20,
+) -> None:
+    """Show Ghost daemon log output."""
+    target = (path or Path.cwd()).resolve()
+    project_root = find_project_root(target) or target
+
+    log_file = daemon_log_path(project_root)
+    if not log_file.is_file():
+        click.echo("No log file found.")
+        return
+
+    tail = tail_log(project_root, lines=lines)
+    for line in tail:
+        click.echo(line)
+
+    if not follow:
+        return
+
+    with contextlib.suppress(KeyboardInterrupt):
+        follow_log_stream(project_root, lambda line: click.echo(line, nl=False))
+
+
 def _system_exit_code(exc: SystemExit) -> int:
     """Normalise ``SystemExit.code``, which may be ``None`` or a non-integer."""
     if exc.code is None:
-        return 0
-    return exc.code if isinstance(exc.code, int) else 1
+        return ExitCode.SUCCESS
+    return int(exc.code) if isinstance(exc.code, int) else ExitCode.ERROR
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -620,16 +927,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.exit_code
     except click.exceptions.Abort:
         click.echo("Aborted.", err=True)
-        return 130
+        return ExitCode.INTERRUPTED
     except click.ClickException as exc:
         exc.show()
         return exc.exit_code
     except GhostError as exc:
         click.echo(f"Error: {exc}", err=True)
-        return 1
+        return ExitCode.ERROR
     except SystemExit as exc:  # raised by commands that fail their own checks
         return _system_exit_code(exc)
-    return 0
+    return ExitCode.SUCCESS
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 10 of 13 stages complete.**
+**Progress: 11 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -20,9 +20,10 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 7 | Change tracking | ✅ **done** | — |
 | 8 | Debounce + job queue | ✅ **done** | — |
 | 9 | File watcher | ✅ **done** | — |
-| 10 | **CLI completion** | ⬜ next | — |
-| 11 | Daemon | ⬜ pending | — |
+| 10 | **CLI completion** | ✅ **done** | — |
+| 11 | Daemon | ⬜ next | — |
 | 12 | Console + end-to-end | ⬜ pending | — |
+
 
 ---
 
@@ -59,12 +60,14 @@ src/ghost/
 ├── change_tracker.py  # SHA-256 content cache, atomic persistence, path keys
 ├── job_queue.py       # per-path debouncing, worker pool, per-path execution guard
 ├── watcher.py         # watchdog OS events, atomic saves, test filtering, bridge
-└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate, watch
+├── daemon.py          # PID file management, process queries, log tailing, daemon hooks
+└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate, watch, init, start, stop, status, logs
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
 ├── test_cli.py            # command behaviour via CliRunner
 ├── test_config.py         # configuration loading, precedence, and validation
+├── test_daemon.py         # PID tracking, process queries, log tailing
 ├── test_rate_limiter.py   # GCRA rate limiter scheduling and backoff
 ├── test_providers.py      # BaseProvider retry/rate-limiting template, Groq
 ├── test_indexer.py        # AST extraction, type hints, tree, budgeting
@@ -77,7 +80,7 @@ tests/
 └── test_watcher.py        # atomic rename saves, test filtering, lifecycle
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE [--if-changed]`, `ghost watch [PATH]`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE [--if-changed]`, `ghost watch [PATH]`, `ghost init [PATH]`, `ghost start [PATH]`, `ghost stop [PATH]`, `ghost status [PATH]`, `ghost logs [PATH]`, `ghost --help`.
 
 ---
 
@@ -151,7 +154,7 @@ The single `watchdog`-thread → event-loop boundary. Handles atomic-rename save
 which the original misses entirely — meaning it never sees saves from vim,
 JetBrains IDEs, or a formatter.
 
-### ⬜ Stage 10 — CLI completion
+### ✅ Stage 10 — CLI completion
 **Adds:** `ghost init`, and wires `start`/`stop`/`status`/`logs`
 The init wizard (using live model listings), structured exit codes, full
 `CliRunner` coverage.

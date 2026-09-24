@@ -327,6 +327,15 @@ def _format_validation_error(err: ValidationError, filename: str = "ghost.toml")
     return "; ".join(messages)
 
 
+class _FilteredDotEnvSource(DotEnvSettingsSource):
+    """DotEnv settings source filtering out variables not matching model fields."""
+
+    @override
+    def __call__(self) -> dict[str, Any]:
+        d = super().__call__()
+        return {k: v for k, v in d.items() if k in self.settings_cls.model_fields}
+
+
 def _resolve_config_paths(
     project_path: Path | None,
     *,
@@ -406,7 +415,7 @@ def load_config(
             _ = (dotenv_settings, file_secret_settings)
             sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings]
             if env_path is not None and env_path.is_file():
-                sources.append(DotEnvSettingsSource(settings_cls, env_file=env_path))
+                sources.append(_FilteredDotEnvSource(settings_cls, env_file=env_path))
             if toml_path is not None and toml_path.is_file():
                 sources.append(TomlConfigSettingsSource(settings_cls, toml_file=toml_path))
             return tuple(sources)

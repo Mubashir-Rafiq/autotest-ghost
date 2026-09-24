@@ -19,7 +19,8 @@ from click.testing import CliRunner
 
 import ghost
 from ghost.cli import cli, main
-from ghost.errors import ConfigError, ProjectNotInitializedError
+from ghost.daemon import DaemonStatus
+from ghost.errors import ConfigError, ExitCode, ProjectNotInitializedError
 from ghost.pipeline import PipelineResult, PipelineStatus, TestPipeline
 from ghost.watcher import FileWatcher
 
@@ -474,3 +475,323 @@ def test_watch_command_runs_with_options(tmp_path: Path, monkeypatch: pytest.Mon
     assert started
     assert "Ghost watching" in result.output
     assert "Watcher stopped." in result.output
+
+
+def test_exit_code_constants() -> None:
+    assert ExitCode.SUCCESS.value == 0
+    assert ExitCode.ERROR.value == 1
+    assert ExitCode.USAGE_ERROR.value == 2
+    assert ExitCode.INTERRUPTED.value == 130
+
+
+def test_init_command_help() -> None:
+    result = CliRunner().invoke(cli, ["init", "--help"])
+    assert result.exit_code == 0
+    assert "--provider" in result.output
+    assert "--model" in result.output
+    assert "--framework" in result.output
+
+
+def test_init_fresh_project_with_prompts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "app.py").write_text("def hello() -> str: return 'hi'\n", encoding="utf-8")
+
+    # Inputs:
+    # 1. AI provider prompt: accept default (Enter)
+    # 2. API key prompt: skip (Enter)
+    # 3. Model prompt: accept default (Enter)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init"], input="\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "Created " in result.output
+    assert "Indexed 1 file(s)" in result.output
+    assert "Ghost initialized. Run 'ghost watch' to start." in result.output
+
+    config_file = tmp_path / "ghost.toml"
+    assert config_file.is_file()
+    assert 'provider = "groq"' in config_file.read_text(encoding="utf-8")
+
+    context_file = tmp_path / ".ghost" / "context.json"
+    assert context_file.is_file()
+    data = json.loads(context_file.read_text(encoding="utf-8"))
+    assert "app.py" in data
+
+
+def test_init_with_options_and_api_key_saving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    # Provider passed via -p (openai), model via -m (gpt-4o), framework via -f (unittest)
+    # Wizard still confirms provider; then prompts for API key and offers to save to .env
+    # Inputs:
+    # 1. AI provider confirmation: accept default openai (Enter)
+    # 2. Enter API key: sk-secret-12345
+    # 3. Save to .env?: y
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["init", "-p", "openai", "-m", "gpt-4o", "-f", "unittest"],
+        input="\nsk-secret-12345\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+
+    config_file = tmp_path / "ghost.toml"
+    assert config_file.is_file()
+    text = config_file.read_text(encoding="utf-8")
+    assert 'provider = "openai"' in text
+    assert 'model = "gpt-4o"' in text
+    assert 'framework = "unittest"' in text
+
+    env_file = tmp_path / ".env"
+    assert env_file.is_file()
+    assert "OPENAI_API_KEY=sk-secret-12345" in env_file.read_text(encoding="utf-8")
+
+
+def test_init_existing_config_declines_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_file = tmp_path / "ghost.toml"
+    config_file.write_text("# preserved\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init"], input="n\n")
+    assert result.exit_code == 0
+    assert "Init cancelled." in result.output
+    assert config_file.read_text(encoding="utf-8") == "# preserved\n"
+
+
+def test_init_existing_config_confirms_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_file = tmp_path / "ghost.toml"
+    config_file.write_text("# preserved\n", encoding="utf-8")
+
+    # Inputs:
+    # 1. Overwrite: y
+    # 2. Provider: Enter
+    # 3. API key: Enter
+    # 4. Model: Enter
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init"], input="y\n\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert config_file.read_text(encoding="utf-8") != "# preserved\n"
+    assert "Created " in result.output
+
+
+def test_init_existing_env_key_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_1234567890abcdef")
+
+    # Inputs:
+    # 1. Provider: Enter
+    # 2. Use this key?: y (Enter)
+    # 3. Model: Enter
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init"], input="\n\n\n")
+    assert result.exit_code == 0
+    assert "Found API key in $GROQ_API_KEY: gsk_************" in result.output
+
+
+def test_init_existing_env_key_declined_and_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_1234567890abcdef")
+
+    # Inputs:
+    # 1. Provider: Enter
+    # 2. Use this key?: n
+    # 3. Enter API key: gsk_custom999
+    # 4. Save to .env?: y
+    # 5. Model: Enter
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init"], input="\nn\ngsk_custom999\ny\n\n")
+    assert result.exit_code == 0
+
+    env_file = tmp_path / ".env"
+    assert env_file.is_file()
+    assert "GROQ_API_KEY=gsk_custom999" in env_file.read_text(encoding="utf-8")
+
+
+def test_init_ollama_local_provider_skips_key_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    # Inputs:
+    # 1. Provider: ollama
+    # 2. Model: Enter (llama3:latest)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init"], input="ollama\n\n")
+    assert result.exit_code == 0, result.output
+    assert "Enter " not in result.output
+
+    config_file = tmp_path / "ghost.toml"
+    assert 'provider = "ollama"' in config_file.read_text(encoding="utf-8")
+    assert 'model = "llama3:latest"' in config_file.read_text(encoding="utf-8")
+
+
+def test_start_command_help() -> None:
+    result = CliRunner().invoke(cli, ["start", "--help"])
+    assert result.exit_code == 0
+    assert "--detach" in result.output
+    assert "--foreground" in result.output
+
+
+def test_start_uninitialized_project_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(cli, ["start"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ProjectNotInitializedError)
+    assert "no ghost.toml found" in str(result.exception)
+    assert main(["start"]) == ExitCode.ERROR
+
+
+def test_start_foreground_invokes_watch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+
+    called = False
+
+    def mock_start(self: FileWatcher) -> None:
+        nonlocal called
+        called = True
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FileWatcher, "start", mock_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["start", "--foreground"])
+    assert result.exit_code == 0
+    assert called
+    assert "Ghost watching" in result.output
+
+
+def test_start_detach_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+
+    monkeypatch.setattr("ghost.cli.start_daemon", lambda _root: 12345)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["start"])
+    assert result.exit_code == 0
+    assert "Ghost daemon started (PID 12345)." in result.output
+
+
+def test_start_detach_already_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+
+    def mock_start(_root: Path) -> int:
+        msg = "daemon already running (PID 9999)"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("ghost.cli.start_daemon", mock_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["start"])
+    assert result.exit_code == 1
+    assert "daemon already running (PID 9999)" in result.output
+
+
+def test_stop_command_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ghost.cli.stop_daemon", lambda _root: True)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["stop"])
+    assert result.exit_code == 0
+    assert "Ghost daemon stopped." in result.output
+
+
+def test_stop_command_not_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ghost.cli.stop_daemon", lambda _root: False)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["stop"])
+    assert result.exit_code == 0
+    assert "No daemon is running." in result.output
+
+
+def test_status_command_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    status = DaemonStatus(
+        pid=5555,
+        running=True,
+        log_tail=["watcher started", "processing test_calc.py"],
+    )
+    monkeypatch.setattr("ghost.cli.query_daemon_status", lambda _root: status)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["status"])
+    assert result.exit_code == 0
+    assert "Ghost daemon is running (PID 5555)." in result.output
+    assert "Recent log:" in result.output
+    assert "watcher started" in result.output
+    assert "processing test_calc.py" in result.output
+
+
+def test_status_command_not_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    status = DaemonStatus(pid=None, running=False, log_tail=[])
+    monkeypatch.setattr("ghost.cli.query_daemon_status", lambda _root: status)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["status"])
+    assert result.exit_code == 0
+    assert "Ghost daemon is not running." in result.output
+
+
+def test_logs_command_no_log_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["logs"])
+    assert result.exit_code == 0
+    assert "No log file found." in result.output
+
+
+def test_logs_command_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    log_file = tmp_path / ".ghost" / "daemon.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["logs", "--lines", "2"])
+    assert result.exit_code == 0
+    assert "line 2\nline 3" in result.output
+
+
+def test_logs_command_follow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    log_file = tmp_path / ".ghost" / "daemon.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text("initial log\n", encoding="utf-8")
+
+    def mock_follow(_root: Path, cb: Any) -> None:
+        cb("streamed event\n")
+
+    monkeypatch.setattr("ghost.cli.follow_log_stream", mock_follow)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["logs", "--follow"])
+    assert result.exit_code == 0
+    assert "initial log" in result.output
+    assert "streamed event" in result.output
+
+
+def test_main_structured_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    # Success returns ExitCode.SUCCESS (0)
+    assert main(["version"]) == ExitCode.SUCCESS
+
+    # Usage error returns 2
+    assert main(["nonexistent-command"]) == ExitCode.USAGE_ERROR
+
+    # Anticipated GhostError returns ExitCode.ERROR (1)
+    assert main(["generate", "nonexistent_file.py"]) == ExitCode.ERROR

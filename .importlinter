@@ -19,6 +19,7 @@ name = Ghost layered architecture
 type = layers
 layers =
     ghost.cli
+    ghost.daemon
     ghost.watcher
     ghost.pipeline
     ghost.runner

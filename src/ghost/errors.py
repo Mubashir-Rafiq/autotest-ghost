@@ -24,10 +24,12 @@ Two standing rules for everything defined here:
 
 from __future__ import annotations
 
+import enum
 from pathlib import Path
 
 __all__ = [
     "ConfigError",
+    "ExitCode",
     "GhostError",
     "HandwrittenTestOverwriteError",
     "IndexingError",
@@ -42,6 +44,15 @@ __all__ = [
     "UnparseableCodeError",
     "UnsupportedFileError",
 ]
+
+
+class ExitCode(enum.IntEnum):
+    """Structured process exit codes returned by Ghost commands."""
+
+    SUCCESS = 0
+    ERROR = 1
+    USAGE_ERROR = 2
+    INTERRUPTED = 130
 
 
 class GhostError(Exception):
