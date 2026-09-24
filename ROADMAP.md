@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 8 of 13 stages complete.**
+**Progress: 9 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -18,8 +18,8 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 5 | Test runner + classification | ✅ **done** | — |
 | 6 | The pipeline | ✅ **done** | — |
 | 7 | Change tracking | ✅ **done** | — |
-| 8 | **Debounce + job queue** | ⬜ next | — |
-| 9 | File watcher | ⬜ pending | — |
+| 8 | Debounce + job queue | ✅ **done** | — |
+| 9 | **File watcher** | ⬜ next | — |
 | 10 | CLI completion | ⬜ pending | — |
 | 11 | Daemon | ⬜ pending | — |
 | 12 | Console + end-to-end | ⬜ pending | — |
@@ -57,6 +57,7 @@ src/ghost/
 ├── runner.py          # subprocess test runner with timeout and classification
 ├── pipeline.py        # unified generate -> run -> classify -> heal -> judge state machine
 ├── change_tracker.py  # SHA-256 content cache, atomic persistence, path keys
+├── job_queue.py       # per-path debouncing, worker pool, per-path execution guard
 └── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate
 tests/
 ├── conftest.py            # shared fixtures
@@ -70,7 +71,8 @@ tests/
 ├── test_client.py         # LLM client, AST validation, overwrite protection
 ├── test_runner.py         # subprocess runner, timeouts, and error classification
 ├── test_pipeline.py       # unified pipeline, healing loop, judge safety valve
-└── test_change_tracker.py # SHA-256 caching, atomic replace, fail-open invariants
+├── test_change_tracker.py # SHA-256 caching, atomic replace, fail-open invariants
+└── test_job_queue.py      # deadline bumping, per-path concurrency guard, stop/drain
 ```
 
 Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE [--if-changed]`, `ghost --help`.
@@ -136,7 +138,7 @@ SHA-256 content cache that skips the pipeline for unchanged saves. Recorded only
 *after* the pipeline completes, and never on cancellation, so a crash cannot be
 mistaken for "already done".
 
-### ⬜ Stage 8 — Debounce + job queue
+### ✅ Stage 8 — Debounce + job queue
 Per-path debouncing with asyncio deadline-bumping, and a worker pool whose
 per-path guard actually holds under concurrency (the original's does not, and
 `IMPROVEMENTS.md` §3.2 incorrectly claims it does).
