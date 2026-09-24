@@ -19,4 +19,5 @@ name = Ghost layered architecture
 type = layers
 layers =
     ghost.cli
+    ghost.config
     ghost.errors

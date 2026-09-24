@@ -6,13 +6,13 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 1 of 13 stages complete.**
+**Progress: 2 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
 | 0 | Scaffolding, tooling, CI | ✅ **done** | [00-scaffolding.md](docs/stages/00-scaffolding.md) |
-| 1 | Configuration | ⬜ next | — |
-| 2 | Providers + rate limiting | ⬜ pending | — |
+| 1 | Configuration | ✅ **done** | — |
+| 2 | Providers + rate limiting | ⬜ next | — |
 | 3 | AST project indexing | ⬜ pending | — |
 | 4 | Prompts + LLM client | ⬜ pending | — |
 | 5 | Test runner + classification | ⬜ pending | — |
@@ -47,14 +47,16 @@ These were settled before Stage 0 and are not revisited without a written reason
 src/ghost/
 ├── __init__.py    # __version__, read from package metadata
 ├── errors.py      # exception taxonomy rooted at GhostError
-└── cli.py         # command group: version, doctor
+├── config.py      # GhostConfig, layered loading, validation
+└── cli.py         # command group: version, doctor, config
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
-└── test_cli.py            # command behaviour via CliRunner
+├── test_cli.py            # command behaviour via CliRunner
+└── test_config.py         # configuration loading, precedence, and validation
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost --help`.
 
 ---
 
@@ -70,7 +72,7 @@ Packaging (`pyproject.toml`, hatchling, `src/` layout), the five quality gates
 Actions CI on a 3.11/3.12/3.13 matrix plus a non-blocking 3.14 forward-compat
 job, `errors.py`, and the CLI skeleton with its error boundary.
 
-### ⬜ Stage 1 — Configuration
+### ✅ Stage 1 — Configuration
 **Adds:** `ghost config --show`
 `GhostConfig` as a frozen `pydantic-settings` model with `extra="forbid"`.
 Layered precedence: defaults → `ghost.toml` → `.env` → environment. **One**

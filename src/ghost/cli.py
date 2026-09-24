@@ -21,12 +21,14 @@ import platform
 import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import click
 
 from ghost import __version__
-from ghost.errors import GhostError
+from ghost.config import find_project_root, load_config
+from ghost.errors import ConfigError, GhostError, ProjectNotInitializedError
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -113,12 +115,53 @@ def doctor() -> None:
         status = found if found is not None else "not installed"
         click.echo(f"  {distribution:<20} {status}")
 
+    click.echo("\nConfiguration")
+    project_root = find_project_root()
+    if project_root is not None:
+        try:
+            load_config(project_root, must_exist=True)
+            click.echo(f"  ghost.toml           found ({project_root / 'ghost.toml'})")
+        except ConfigError as err:
+            click.echo(f"  ghost.toml           invalid ({err})")
+    else:
+        click.echo("  ghost.toml           not found")
+
     click.echo("")
     if missing:
         click.echo(f"{len(missing)} required dependency/dependencies missing: {', '.join(missing)}")
         click.echo("Run 'uv sync' to install them.")
         raise SystemExit(1)
     click.echo(f"All required dependencies present ({_OK}).")
+
+
+@cli.command("config")
+@click.option(
+    "--show",
+    "-s",
+    "_show",
+    is_flag=True,
+    default=False,
+    help="Pretty-print the current ghost.toml configuration.",
+)
+@click.argument(
+    "path",
+    type=click.Path(path_type=Path, exists=False),
+    required=False,
+    default=None,
+)
+def config_cmd(*, _show: bool = False, path: Path | None = None) -> None:
+    """View and inspect Ghost project configuration."""
+    target = path or Path.cwd()
+    root = find_project_root(target)
+    if target.is_file() and target.name == "ghost.toml":
+        config_file = target
+    elif root is not None:
+        config_file = root / "ghost.toml"
+    else:
+        raise ProjectNotInitializedError(target)
+
+    load_config(config_file, must_exist=True)
+    click.echo(config_file.read_text(encoding="utf-8").strip())
 
 
 def _system_exit_code(exc: SystemExit) -> int:
