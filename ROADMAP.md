@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 12 of 13 stages complete.**
+**Progress: 13 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -22,7 +22,7 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 9 | File watcher | ✅ **done** | — |
 | 10 | **CLI completion** | ✅ **done** | — |
 | 11 | Daemon | ✅ **done** | — |
-| 12 | Console + end-to-end | ⬜ next | — |
+| 12 | Console + end-to-end | ✅ **done** | — |
 
 
 
@@ -62,13 +62,16 @@ src/ghost/
 ├── job_queue.py       # per-path debouncing, worker pool, per-path execution guard
 ├── watcher.py         # watchdog OS events, atomic saves, test filtering, bridge
 ├── daemon.py          # PID file management, process queries, log tailing, daemon hooks
+├── console.py         # rich terminal formatting, panels, syntax highlighting, pipeline listener
 └── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate, watch, init, start, stop, status, logs
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
 ├── test_cli.py            # command behaviour via CliRunner
 ├── test_config.py         # configuration loading, precedence, and validation
+├── test_console.py        # rich formatting and RichPipelineListener unit tests
 ├── test_daemon.py         # PID tracking, process queries, log tailing
+├── test_e2e.py            # end-to-end integration tests (real init, index, run, heal, daemon)
 ├── test_rate_limiter.py   # GCRA rate limiter scheduling and backoff
 ├── test_providers.py      # BaseProvider retry/rate-limiting template, Groq
 ├── test_indexer.py        # AST extraction, type hints, tree, budgeting
@@ -165,9 +168,9 @@ Background process management: `flock`-based PID file (immune to PID reuse),
 asyncio signal handling, non-blocking log rotation, and a documented nine-step
 shutdown sequence.
 
-### ⬜ Stage 12 — Console + end-to-end
-`rich` presentation in roughly 150 lines rather than the original's 702, and a
-full end-to-end test in which everything is real except the LLM.
+### ✅ Stage 12 — Console + end-to-end
+`rich` presentation in roughly 200 lines rather than the original's 702, and
+full end-to-end integration tests in which everything is real except the LLM.
 
 ---
 

@@ -45,6 +45,7 @@ from ghost.config import (
     load_config,
     write_default_config,
 )
+from ghost.console import print_banner, print_providers_table
 from ghost.daemon import (
     daemon_log_path,
     follow_log_stream,
@@ -215,6 +216,7 @@ def _handle_init_api_key(target: Path, chosen_provider: str) -> None:
 def cli(ctx: click.Context) -> None:
     """Ghost -- generate, run, and heal tests for your Python project."""
     if ctx.invoked_subcommand is None:
+        print_banner()
         click.echo(ctx.get_help())
 
 
@@ -392,17 +394,7 @@ def providers_cmd() -> None:
     """List supported LLM providers and their availability."""
     config = load_config()
     availability: dict[str, bool] = _run_async(list_available_providers(config))
-
-    click.echo("Supported Providers")
-    click.echo("=" * 40)
-    for name, available in sorted(availability.items()):
-        status = "available (configured)" if available else "not configured"
-        click.echo(f"  {name:<15} {status}")
-
-    click.echo("\nPopular Models")
-    click.echo("=" * 40)
-    for model_id, model_cfg in POPULAR_MODELS.items():
-        click.echo(f"  {model_id:<25} ({model_cfg.provider}) - {model_cfg.description}")
+    print_providers_table(availability, POPULAR_MODELS)
 
 
 @cli.command("models")
@@ -662,7 +654,7 @@ def generate_cmd(
         custom_output=output,
     )
 
-    if test_path.is_file() and not force:
+    if test_path.is_file() and not force and not if_changed:
         if not is_ghost_managed_test(test_path):
             raise HandwrittenTestOverwriteError(test_path)
         if not click.confirm(f"Test file '{test_path}' already exists. Overwrite?", default=False):
