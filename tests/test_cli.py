@@ -10,7 +10,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 from click.testing import CliRunner
 
 import ghost
@@ -134,3 +136,54 @@ def test_doctor_reports_configuration_status() -> None:
     assert result.exit_code == 0
     assert "Configuration" in result.output
     assert "ghost.toml" in result.output
+
+
+def test_providers_command_shows_providers_and_popular_models() -> None:
+    """ghost providers lists supported providers and popular models table."""
+    result = CliRunner().invoke(cli, ["providers"])
+    assert result.exit_code == 0
+    assert "Supported Providers" in result.output
+    assert "groq" in result.output
+    assert "Popular Models" in result.output
+    assert "openai/gpt-oss-120b" in result.output
+
+
+def test_models_command_missing_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ghost models fails with an authentication error when no key is set."""
+    for var in ("GROQ_API_KEY", "GROQ_API_KEY3", "GHOST_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+    result = CliRunner().invoke(cli, ["models"])
+    assert result.exit_code != 0
+    assert "no API key found" in str(result.exception)
+
+
+def test_main_models_missing_key_reports_to_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """main(["models"]) routes ProviderAuthenticationError through the error boundary."""
+    for var in ("GROQ_API_KEY", "GROQ_API_KEY3", "GHOST_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+    code = main(["models"])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "no API key found" in captured.err
+
+
+@respx.mock
+def test_models_command_success_with_live_mock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ghost models outputs the live models list when authorized."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test_key_123")
+    respx.get("https://api.groq.com/openai/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "openai/gpt-oss-120b"}, {"id": "openai/gpt-oss-20b"}]},
+        )
+    )
+
+    result = CliRunner().invoke(cli, ["models"])
+    assert result.exit_code == 0
+    assert "Available models" in result.output
+    assert "openai/gpt-oss-120b" in result.output
+    assert "openai/gpt-oss-20b" in result.output

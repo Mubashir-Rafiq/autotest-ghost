@@ -29,7 +29,12 @@ from pathlib import Path
 __all__ = [
     "ConfigError",
     "GhostError",
+    "ModelNotFoundError",
     "ProjectNotInitializedError",
+    "ProviderAuthenticationError",
+    "ProviderError",
+    "ProviderRateLimitError",
+    "ProviderUnavailableError",
 ]
 
 
@@ -61,3 +66,52 @@ class ProjectNotInitializedError(GhostError):
             f"Run 'ghost init' in your project root to create one."
         )
         super().__init__(message)
+
+
+class ProviderError(GhostError):
+    """Base class for all errors originating from LLM providers."""
+
+    def __init__(self, provider: str, message: str) -> None:
+        self.provider = provider
+        formatted = f"[{provider}] {message}"
+        super().__init__(formatted)
+
+
+class ProviderAuthenticationError(ProviderError):
+    """Missing or invalid API key for a cloud provider."""
+
+    def __init__(self, provider: str, env_var: str | None = None) -> None:
+        hint = f" Set {env_var} in your environment or .env file." if env_var else ""
+        message = f"no API key found for provider {provider!r}.{hint}"
+        super().__init__(provider, message)
+
+
+class ProviderRateLimitError(ProviderError):
+    """Rate limit retries exhausted for a provider."""
+
+    def __init__(self, provider: str, attempts: int, details: str | None = None) -> None:
+        detail_msg = f": {details}" if details else "."
+        message = f"rate limit exceeded after {attempts} attempt(s){detail_msg}"
+        super().__init__(provider, message)
+
+
+class ProviderUnavailableError(ProviderError):
+    """The provider endpoint is offline or unreachable."""
+
+    def __init__(self, provider: str, endpoint: str, details: str | None = None) -> None:
+        detail_msg = f" ({details})" if details else ""
+        message = f"endpoint {endpoint!r} unreachable{detail_msg}."
+        super().__init__(provider, message)
+
+
+class ModelNotFoundError(ProviderError):
+    """The requested model is not supported or not available from this provider."""
+
+    def __init__(
+        self, provider: str, model: str, available_models: list[str] | None = None
+    ) -> None:
+        hint = (
+            f" Available models: {', '.join(sorted(available_models))}" if available_models else ""
+        )
+        message = f"model {model!r} not found for provider {provider!r}.{hint}"
+        super().__init__(provider, message)

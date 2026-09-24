@@ -17,21 +17,27 @@ lines, something has leaked into it.
 
 from __future__ import annotations
 
+import asyncio
 import platform
 import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as distribution_version
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import click
 
 from ghost import __version__
 from ghost.config import find_project_root, load_config
 from ghost.errors import ConfigError, GhostError, ProjectNotInitializedError
+from ghost.providers import (
+    POPULAR_MODELS,
+    get_provider,
+    list_available_providers,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Coroutine, Sequence
 
 __all__ = ["cli", "main"]
 
@@ -126,12 +132,24 @@ def doctor() -> None:
     else:
         click.echo("  ghost.toml           not found")
 
+    click.echo("\nAI Providers")
+    config_for_doctor = load_config()
+    provider_status: dict[str, bool] = _run_async(list_available_providers(config_for_doctor))
+    for prov_name, is_avail in sorted(provider_status.items()):
+        status_str = "available" if is_avail else "not configured"
+        click.echo(f"  {prov_name:<20} {status_str}")
+
     click.echo("")
     if missing:
         click.echo(f"{len(missing)} required dependency/dependencies missing: {', '.join(missing)}")
         click.echo("Run 'uv sync' to install them.")
         raise SystemExit(1)
     click.echo(f"All required dependencies present ({_OK}).")
+
+
+def _run_async(coro: Coroutine[Any, Any, Any]) -> Any:
+    """The single event-loop boundary in Ghost."""
+    return asyncio.run(coro)
 
 
 @cli.command("config")
@@ -162,6 +180,46 @@ def config_cmd(*, _show: bool = False, path: Path | None = None) -> None:
 
     load_config(config_file, must_exist=True)
     click.echo(config_file.read_text(encoding="utf-8").strip())
+
+
+@cli.command("providers")
+def providers_cmd() -> None:
+    """List supported LLM providers and their availability."""
+    config = load_config()
+    availability: dict[str, bool] = _run_async(list_available_providers(config))
+
+    click.echo("Supported Providers")
+    click.echo("=" * 40)
+    for name, available in sorted(availability.items()):
+        status = "available (configured)" if available else "not configured"
+        click.echo(f"  {name:<15} {status}")
+
+    click.echo("\nPopular Models")
+    click.echo("=" * 40)
+    for model_id, model_cfg in POPULAR_MODELS.items():
+        click.echo(f"  {model_id:<25} ({model_cfg.provider}) - {model_cfg.description}")
+
+
+@cli.command("models")
+@click.option(
+    "--provider",
+    "-p",
+    default=None,
+    help="Provider to query for models (defaults to configured provider).",
+)
+def models_cmd(provider: str | None) -> None:
+    """List models available live from the provider."""
+    config = load_config()
+    provider_name = provider or config.ai.provider
+    prov = get_provider(provider_name, config=config)
+
+    click.echo(f"Fetching models live from {prov.name}...")
+    models: list[str] = _run_async(prov.list_models())
+
+    click.echo(f"\nAvailable models ({len(models)}):")
+    for model in models:
+        prefix = "  * " if model == config.ai.model else "    "
+        click.echo(f"{prefix}{model}")
 
 
 def _system_exit_code(exc: SystemExit) -> int:

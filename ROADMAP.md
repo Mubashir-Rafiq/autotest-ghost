@@ -6,14 +6,14 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 2 of 13 stages complete.**
+**Progress: 3 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
 | 0 | Scaffolding, tooling, CI | ✅ **done** | [00-scaffolding.md](docs/stages/00-scaffolding.md) |
 | 1 | Configuration | ✅ **done** | — |
-| 2 | Providers + rate limiting | ⬜ next | — |
-| 3 | AST project indexing | ⬜ pending | — |
+| 2 | Providers + rate limiting | ✅ **done** | — |
+| 3 | AST project indexing | ⬜ next | — |
 | 4 | Prompts + LLM client | ⬜ pending | — |
 | 5 | Test runner + classification | ⬜ pending | — |
 | 6 | **The pipeline** | ⬜ pending | — |
@@ -45,18 +45,22 @@ These were settled before Stage 0 and are not revisited without a written reason
 
 ```
 src/ghost/
-├── __init__.py    # __version__, read from package metadata
-├── errors.py      # exception taxonomy rooted at GhostError
-├── config.py      # GhostConfig, layered loading, validation
-└── cli.py         # command group: version, doctor, config
+├── __init__.py        # __version__, read from package metadata
+├── errors.py          # exception taxonomy rooted at GhostError
+├── config.py          # GhostConfig, layered loading, validation
+├── rate_limiter.py    # GCRA rate limiting and backoff calculation
+├── providers.py       # BaseProvider template method, GroqProvider, registry
+└── cli.py             # command group: version, doctor, config, providers, models
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
 ├── test_cli.py            # command behaviour via CliRunner
-└── test_config.py         # configuration loading, precedence, and validation
+├── test_config.py         # configuration loading, precedence, and validation
+├── test_rate_limiter.py   # GCRA rate limiter scheduling and backoff
+└── test_providers.py      # BaseProvider retry/rate-limiting template, Groq
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost --help`.
 
 ---
 
@@ -79,7 +83,7 @@ Layered precedence: defaults → `ghost.toml` → `.env` → environment. **One*
 template-writing function (the original had two, and they drifted). A malformed
 config produces an error naming the offending key, not a silent default.
 
-### ⬜ Stage 2 — Providers + rate limiting
+### ✅ Stage 2 — Providers + rate limiting
 **Adds:** `ghost providers`, `ghost models`
 `BaseProvider` using the template-method pattern so retry and rate limiting
 cannot be forgotten by a subclass (in the original the retry decorator sat on an
