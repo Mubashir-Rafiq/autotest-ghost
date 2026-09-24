@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 9 of 13 stages complete.**
+**Progress: 10 of 13 stages complete.**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -19,8 +19,8 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 6 | The pipeline | ✅ **done** | — |
 | 7 | Change tracking | ✅ **done** | — |
 | 8 | Debounce + job queue | ✅ **done** | — |
-| 9 | **File watcher** | ⬜ next | — |
-| 10 | CLI completion | ⬜ pending | — |
+| 9 | File watcher | ✅ **done** | — |
+| 10 | **CLI completion** | ⬜ next | — |
 | 11 | Daemon | ⬜ pending | — |
 | 12 | Console + end-to-end | ⬜ pending | — |
 
@@ -58,7 +58,8 @@ src/ghost/
 ├── pipeline.py        # unified generate -> run -> classify -> heal -> judge state machine
 ├── change_tracker.py  # SHA-256 content cache, atomic persistence, path keys
 ├── job_queue.py       # per-path debouncing, worker pool, per-path execution guard
-└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate
+├── watcher.py         # watchdog OS events, atomic saves, test filtering, bridge
+└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate, watch
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
@@ -72,10 +73,11 @@ tests/
 ├── test_runner.py         # subprocess runner, timeouts, and error classification
 ├── test_pipeline.py       # unified pipeline, healing loop, judge safety valve
 ├── test_change_tracker.py # SHA-256 caching, atomic replace, fail-open invariants
-└── test_job_queue.py      # deadline bumping, per-path concurrency guard, stop/drain
+├── test_job_queue.py      # deadline bumping, per-path concurrency guard, stop/drain
+└── test_watcher.py        # atomic rename saves, test filtering, lifecycle
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE [--if-changed]`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE [--if-changed]`, `ghost watch [PATH]`, `ghost --help`.
 
 ---
 
@@ -143,7 +145,7 @@ Per-path debouncing with asyncio deadline-bumping, and a worker pool whose
 per-path guard actually holds under concurrency (the original's does not, and
 `IMPROVEMENTS.md` §3.2 incorrectly claims it does).
 
-### ⬜ Stage 9 — File watcher
+### ✅ Stage 9 — File watcher
 **Adds:** `ghost watch`
 The single `watchdog`-thread → event-loop boundary. Handles atomic-rename saves,
 which the original misses entirely — meaning it never sees saves from vim,

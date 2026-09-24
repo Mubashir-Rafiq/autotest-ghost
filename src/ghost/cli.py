@@ -35,7 +35,7 @@ import click
 
 from ghost import __version__
 from ghost.client import is_ghost_managed_test
-from ghost.config import find_project_root, load_config
+from ghost.config import find_project_root, load_config, write_default_config
 from ghost.errors import (
     ConfigError,
     GhostError,
@@ -58,6 +58,7 @@ from ghost.providers import (
     list_available_providers,
 )
 from ghost.runner import TestRunResult, run_test
+from ghost.watcher import FileWatcher
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine, Sequence
@@ -374,6 +375,25 @@ def run_tests_cmd(test_file: Path, timeout: float | None = None) -> None:
 class CliPipelineListener(PipelineListener):
     """Terminal listener printing progress messages to stdout."""
 
+    def __init__(self, *, verbose: bool = False, show_results: bool = False) -> None:
+        self.verbose = verbose
+        self.show_results = show_results
+
+    def _handle_result(self, event: PipelineEvent, data: dict[str, Any]) -> None:
+        if event == PipelineEvent.PASSED and self.show_results:
+            test_file = data.get("test_file")
+            attempt = data.get("attempt", 0)
+            if attempt > 0:
+                click.echo(f"PASS (healed after {attempt} attempt(s)): {test_file}")
+            else:
+                click.echo(f"PASS: {test_file}")
+        elif event == PipelineEvent.FAILED and self.show_results:
+            test_file = data.get("test_file")
+            click.echo(f"FAIL: {test_file}")
+        elif event == PipelineEvent.SKIPPED and self.verbose:
+            src = data.get("source_file")
+            click.echo(f"SKIPPED: {Path(src).name if src else 'source'} (unchanged)")
+
     @override
     def on_event(self, event: PipelineEvent, data: dict[str, Any]) -> None:
         if event == PipelineEvent.GENERATING:
@@ -394,6 +414,8 @@ class CliPipelineListener(PipelineListener):
         elif event == PipelineEvent.JUDGE_RESULT:
             outcome = data.get("outcome")
             click.echo(f"Judge evaluated failure as: {outcome}")
+        else:
+            self._handle_result(event, data)
 
 
 @cli.command("generate")
@@ -496,6 +518,84 @@ def generate_cmd(
         if result.error_message:
             click.echo(f"  {result.error_message}")
         raise SystemExit(1)
+
+
+@cli.command("watch")
+@click.argument(
+    "path",
+    type=click.Path(path_type=Path, exists=False),
+    required=False,
+    default=None,
+)
+@click.option(
+    "--verbose",
+    "-V",
+    is_flag=True,
+    default=False,
+    help="Enable verbose output.",
+)
+@click.option(
+    "--heal/--no-heal",
+    "auto_heal",
+    default=None,
+    help="Enable or disable self-healing of failing tests.",
+)
+@click.option(
+    "--judge/--no-judge",
+    "use_judge",
+    default=None,
+    help="Enable or disable the Judge safety valve for logic errors.",
+)
+def watch_cmd(
+    path: Path | None = None,
+    *,
+    verbose: bool = False,
+    auto_heal: bool | None = None,
+    use_judge: bool | None = None,
+) -> None:
+    """Watch Python source files for changes and automatically generate/heal tests."""
+    target = (path or Path.cwd()).resolve()
+    project_root = find_project_root(target) or target
+
+    config_file = project_root / "ghost.toml"
+    if not config_file.is_file():
+        write_default_config(project_root)
+        click.echo(f"Initialized ghost.toml at {config_file}")
+
+    config = load_config(project_root)
+    test_updates: dict[str, Any] = {}
+    if auto_heal is not None:
+        test_updates["auto_heal"] = auto_heal
+    if use_judge is not None:
+        test_updates["use_judge"] = use_judge
+    if test_updates:
+        config = config.model_copy(update={"tests": config.tests.model_copy(update=test_updates)})
+
+    click.echo(f"Ghost watching {project_root} (debounce: {config.watcher.debounce_seconds}s)")
+    click.echo("Press Ctrl+C to stop.\n")
+
+    listener = CliPipelineListener(verbose=verbose, show_results=True)
+
+    async def _run() -> None:
+        watcher = FileWatcher(
+            project_root=project_root,
+            config=config,
+            listener=listener,
+        )
+        watcher.start()
+        try:
+            stop_event = asyncio.Event()
+            await stop_event.wait()
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
+        finally:
+            await watcher.stop()
+
+    try:
+        _run_async(_run())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        click.echo("\nStopping watcher...")
+        click.echo("Watcher stopped.")
 
 
 def _system_exit_code(exc: SystemExit) -> int:

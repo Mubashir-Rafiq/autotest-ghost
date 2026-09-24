@@ -21,6 +21,7 @@ import ghost
 from ghost.cli import cli, main
 from ghost.errors import ConfigError, ProjectNotInitializedError
 from ghost.pipeline import PipelineResult, PipelineStatus, TestPipeline
+from ghost.watcher import FileWatcher
 
 
 def test_bare_invocation_shows_help() -> None:
@@ -420,3 +421,56 @@ def test_generate_command_if_changed_skipped(
     result = CliRunner().invoke(cli, ["generate", "calc.py", "--force", "--if-changed"])
     assert result.exit_code == 0
     assert "SKIPPED: calc.py is unchanged (--if-changed)." in result.output
+
+
+def test_watch_command_help() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["watch", "--help"])
+    assert result.exit_code == 0
+    assert "Watch Python source files for changes" in result.output
+    assert "--verbose" in result.output
+    assert "--heal / --no-heal" in result.output
+    assert "--judge / --no-judge" in result.output
+
+
+def test_watch_auto_initializes_ghost_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_file = tmp_path / "ghost.toml"
+    assert not config_file.exists()
+
+    def mock_start(self: FileWatcher) -> None:
+        # Immediately interrupt to terminate the watch command cleanly
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FileWatcher, "start", mock_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["watch"])
+    assert result.exit_code == 0
+    assert "Initialized ghost.toml" in result.output
+    assert config_file.is_file()
+    assert "Ghost watching" in result.output
+    assert "Stopping watcher..." in result.output
+
+
+def test_watch_command_runs_with_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[ai]\nprovider = 'groq'\n", encoding="utf-8")
+
+    started = False
+
+    def mock_start(self: FileWatcher) -> None:
+        nonlocal started
+        started = True
+        assert self.config.tests.auto_heal is False
+        assert self.config.tests.use_judge is False
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FileWatcher, "start", mock_start)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["watch", "--no-heal", "--no-judge", "--verbose"])
+    assert result.exit_code == 0
+    assert started
+    assert "Ghost watching" in result.output
+    assert "Watcher stopped." in result.output
