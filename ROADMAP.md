@@ -191,6 +191,14 @@ Support for OpenAI, Anthropic, Ollama, LM Studio, OpenRouter, and Custom provide
 - Batch test generation discovering non-ignored project source files and rendering Rich summary tables.
 - Pytest coverage integration (`--cov`, `--cov-source`) and total line reporting.
 
+### ✅ Stage 15 — Publish
+**Adds:** PyPI packaging, PEP 561 compliance, distribution build artifacts, and release workflow
+- `py.typed` marker for PEP 561 downstream type-checking compliance.
+- Complete metadata in `pyproject.toml` (project URLs, PyPI classifiers, sdist/wheel configurations).
+- Standard MIT `LICENSE` and production-ready `README.md`.
+- `build` target in `Makefile` and verified dual wheel/sdist packaging via `uv build`.
+- Automated release workflow in `.github/workflows/publish.yml` using Trusted Publishing (OIDC).
+
 ---
 
 ## Optional stages (after 12, your choice)
@@ -199,7 +207,7 @@ Support for OpenAI, Anthropic, Ollama, LM Studio, OpenRouter, and Custom provide
 |---|---|---|---|
 | 13 | More providers | ✅ **done** | OpenAI, Anthropic, Ollama, LM Studio, OpenRouter, Custom |
 | 14 | Extra features | ✅ **done** | Coverage reporting, cost/token tracking, heal history, batch generate |
-| 15 | Publish | ⬜ next | PyPI packaging and release workflow |
+| 15 | Publish | ✅ **done** | PyPI packaging and release workflow |
 
 ---
 

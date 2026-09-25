@@ -1,4 +1,4 @@
-.PHONY: help install check fmt lint types imports test cov clean
+.PHONY: help install check fmt lint types imports test cov build clean
 
 help:
 	@echo "install  Install the package and dev dependencies"
@@ -9,6 +9,8 @@ help:
 	@echo "imports  import-linter architectural contracts"
 	@echo "test     pytest"
 	@echo "cov      pytest with a coverage report"
+	@echo "build    Build sdist and wheel with uv build"
+	@echo "clean    Remove build/test caches and artifacts"
 
 install:
 	uv sync
@@ -39,6 +41,10 @@ test:
 cov:
 	uv run pytest -q --cov=ghost --cov-report=term-missing
 
+build:
+	uv build
+
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage dist build
 	find . -type d -name __pycache__ -not -path "./.venv/*" -exec rm -rf {} +
+

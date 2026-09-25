@@ -80,3 +80,29 @@ def test_every_module_has_a_docstring(source_root: Path) -> None:
         f"these modules have no contract docstring: {missing}. State what the module "
         f"owns, what it explicitly does not do, and what it guarantees."
     )
+
+
+def test_pep561_py_typed_marker_exists(source_root: Path) -> None:
+    """``py.typed`` must be present in the root package to satisfy PEP 561."""
+    marker = source_root / "py.typed"
+    assert marker.is_file(), f"PEP 561 marker missing: {marker}"
+
+
+def test_license_file_exists(repo_root: Path) -> None:
+    """The LICENSE file must be present at the repository root and match MIT."""
+    license_file = repo_root / "LICENSE"
+    assert license_file.is_file(), f"LICENSE file missing at {license_file}"
+    content = license_file.read_text(encoding="utf-8")
+    assert "MIT License" in content
+
+
+def test_pyproject_metadata_integrity(repo_root: Path) -> None:
+    """``pyproject.toml`` must define entry point scripts, URLs, and PEP 561 inclusion."""
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    project = pyproject["project"]
+    assert "ghost" in project["scripts"]
+    assert project["scripts"]["ghost"] == "ghost.cli:main"
+    assert "urls" in project
+    assert "Homepage" in project["urls"]
+    assert "Repository" in project["urls"]
+    assert "Issues" in project["urls"]
