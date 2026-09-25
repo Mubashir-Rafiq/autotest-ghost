@@ -6,7 +6,7 @@ completes it**, so the repository always states what is built and what is not.
 Each stage ships: working code, its tests, all gates green, and an explanation
 document in [`docs/stages/`](docs/stages/) written to be learned from.
 
-**Progress: 13 of 13 stages complete.**
+**Progress: 14 stages complete (Core Stages 0-12 + Stage 13).**
 
 | # | Stage | Status | Explanation |
 |---|---|---|---|
@@ -23,6 +23,7 @@ document in [`docs/stages/`](docs/stages/) written to be learned from.
 | 10 | **CLI completion** | ✅ **done** | — |
 | 11 | Daemon | ✅ **done** | — |
 | 12 | Console + end-to-end | ✅ **done** | — |
+| 13 | More providers | ✅ **done** | — |
 
 
 
@@ -51,7 +52,7 @@ src/ghost/
 ├── errors.py          # exception taxonomy rooted at GhostError
 ├── config.py          # GhostConfig, layered loading, validation
 ├── rate_limiter.py    # GCRA rate limiting and backoff calculation
-├── providers.py       # BaseProvider template method, GroqProvider, registry
+├── providers.py       # BaseProvider template method, 7 concrete providers, registry
 ├── indexer.py         # AST static analysis, shared ignore logic, budgeting
 ├── prompts.py         # pure prompt templates and deterministic construction
 ├── client.py          # LLM client, response validation, judge evaluation
@@ -73,7 +74,7 @@ tests/
 ├── test_daemon.py         # PID tracking, process queries, log tailing
 ├── test_e2e.py            # end-to-end integration tests (real init, index, run, heal, daemon)
 ├── test_rate_limiter.py   # GCRA rate limiter scheduling and backoff
-├── test_providers.py      # BaseProvider retry/rate-limiting template, Groq
+├── test_providers.py      # BaseProvider retry/rate-limiting template, 7 providers
 ├── test_indexer.py        # AST extraction, type hints, tree, budgeting
 ├── test_prompts.py        # pure prompt generation and golden-file contracts
 ├── test_client.py         # LLM client, AST validation, overwrite protection
@@ -172,15 +173,23 @@ shutdown sequence.
 `rich` presentation in roughly 200 lines rather than the original's 702, and
 full end-to-end integration tests in which everything is real except the LLM.
 
+### ✅ Stage 13 — More providers
+Support for OpenAI, Anthropic, Ollama, LM Studio, OpenRouter, and Custom providers.
+- Concrete implementations for cloud and local models under the unified `BaseProvider` template.
+- Anthropic system message separation and model adaptation.
+- Local provider zero-rate-limit semantics and live HTTP availability pings for Ollama (`/api/tags`) and LM Studio (`/v1/models`).
+- Clear, actionable error messages when optional provider extras (`openai`, `anthropic`) are missing.
+- Model catalog expansion (`POPULAR_MODELS`, `PROVIDER_MODELS`) and automatic provider detection.
+
 ---
 
 ## Optional stages (after 12, your choice)
 
-| # | Stage | What it adds |
-|---|---|---|
-| 13 | More providers | OpenAI, Anthropic, Ollama, LM Studio, OpenRouter |
-| 14 | Extra features | Coverage reporting, cost/token tracking, heal history, batch generate |
-| 15 | Publish | PyPI packaging and release workflow |
+| # | Stage | Status | What it adds |
+|---|---|---|---|
+| 13 | More providers | ✅ **done** | OpenAI, Anthropic, Ollama, LM Studio, OpenRouter, Custom |
+| 14 | Extra features | ⬜ next | Coverage reporting, cost/token tracking, heal history, batch generate |
+| 15 | Publish | ⬜ | PyPI packaging and release workflow |
 
 ---
 

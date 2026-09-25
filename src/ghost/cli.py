@@ -113,6 +113,8 @@ _INIT_PROVIDER_CHOICES: Final[tuple[str, ...]] = (
     "ollama",
     "anthropic",
     "openrouter",
+    "lmstudio",
+    "custom",
 )
 
 _PROVIDER_DEFAULT_MODELS: Final[dict[str, str]] = {
@@ -120,7 +122,9 @@ _PROVIDER_DEFAULT_MODELS: Final[dict[str, str]] = {
     "openai": "gpt-4o",
     "ollama": "llama3:latest",
     "anthropic": "claude-sonnet-4-20250514",
-    "openrouter": "openai/gpt-4o",
+    "openrouter": "anthropic/claude-3.5-sonnet",
+    "lmstudio": "local-model",
+    "custom": "default",
 }
 
 
