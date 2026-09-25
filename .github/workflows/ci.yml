@@ -24,7 +24,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv python pin 3.13
-      - run: uv sync
+      - run: uv sync --all-extras
       - name: ruff (lint)
         run: uv run ruff check .
       - name: ruff (format)
@@ -47,7 +47,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv python pin ${{ matrix.python-version }}
-      - run: uv sync
+      - run: uv sync --all-extras
       - run: uv run pytest -q
 
   # Non-blocking early warning. watchdog 6.0 and httpx do not yet advertise 3.14
@@ -63,5 +63,5 @@ jobs:
         with:
           enable-cache: true
       - run: uv python pin 3.14
-      - run: uv sync
+      - run: uv sync --all-extras
       - run: uv run pytest -q

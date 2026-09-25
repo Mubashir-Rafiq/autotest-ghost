@@ -28,7 +28,7 @@ import asyncio
 import contextlib
 import sys
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 if sys.version_info >= (3, 12):
     from typing import override
@@ -189,7 +189,7 @@ def _get_async_openai_cls() -> type[Any]:
         )
         raise ProviderError(p_name, msg) from exc
     else:
-        return AsyncOpenAI
+        return cast(type[Any], AsyncOpenAI)
 
 
 def _get_async_anthropic_cls() -> type[Any]:
@@ -203,7 +203,7 @@ def _get_async_anthropic_cls() -> type[Any]:
         )
         raise ProviderError(p_name, msg) from exc
     else:
-        return AsyncAnthropic
+        return cast(type[Any], AsyncAnthropic)
 
 
 class BaseProvider(ABC):

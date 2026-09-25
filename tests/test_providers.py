@@ -16,6 +16,13 @@ import httpx
 import pytest
 import respx
 
+try:
+    import openai  # noqa: F401
+
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+
 from ghost.config import GhostConfig
 from ghost.errors import (
     ModelNotFoundError,
@@ -408,6 +415,7 @@ async def test_lmstudio_provider_availability() -> None:
     assert await provider.is_available() is False
 
 
+@pytest.mark.skipif(not HAS_OPENAI, reason="openai optional dependency is required")
 def test_openrouter_provider_configuration() -> None:
     """OpenRouterProvider sets OpenRouter base URL and default headers."""
     provider = OpenRouterProvider(api_key="sk-or-test")
@@ -417,6 +425,7 @@ def test_openrouter_provider_configuration() -> None:
     assert str(client.base_url) == "https://openrouter.ai/api/v1/"
 
 
+@pytest.mark.skipif(not HAS_OPENAI, reason="openai optional dependency is required")
 @pytest.mark.asyncio
 async def test_custom_provider_validation() -> None:
     """CustomProvider requires explicit base_url."""

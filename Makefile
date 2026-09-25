@@ -13,7 +13,7 @@ help:
 	@echo "clean    Remove build/test caches and artifacts"
 
 install:
-	uv sync
+	uv sync --all-extras
 
 # The single command to run before calling any change done. Ordered cheapest
 # first so the fastest feedback arrives soonest.
