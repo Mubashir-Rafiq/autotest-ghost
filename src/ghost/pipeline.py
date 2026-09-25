@@ -41,6 +41,7 @@ from ghost.errors import (
     SourceFileNotFoundError,
     UnsupportedFileError,
 )
+from ghost.history import HistoryTracker, UsageTracker
 from ghost.providers import get_provider
 from ghost.runner import ErrorClassification, TestRunResult, run_test
 
@@ -170,9 +171,12 @@ class TestPipeline:
         self,
         config: GhostConfig,
         project_root: Path,
+        *,
         client: LLMClient | None = None,
         runner_fn: RunnerFn | None = None,
         tracker: ChangeTracker | None = None,
+        history: HistoryTracker | None = None,
+        usage: UsageTracker | None = None,
     ) -> None:
         self.config = config
         self.project_root = project_root
@@ -183,6 +187,8 @@ class TestPipeline:
             self.client = LLMClient(provider=provider, config=config)
         self._runner_fn: RunnerFn = runner_fn or run_test
         self.tracker = tracker or ChangeTracker(project_root)
+        self.history = history or HistoryTracker(project_root)
+        self.usage = usage or UsageTracker(project_root)
 
     async def _ensure_test_file(
         self,
@@ -196,6 +202,16 @@ class TestPipeline:
         is_existing = await asyncio.to_thread(test_path.is_file)
         if is_existing and not force_generate:
             await asyncio.to_thread(ensure_can_overwrite_test, test_path, force=force)
+            if not self.history.get_history(source_path):
+                existing_code = await asyncio.to_thread(
+                    test_path.read_text, encoding="utf-8", errors="replace"
+                )
+                await self.history.arecord_attempt(
+                    source_path=source_path,
+                    attempt=0,
+                    test_code=existing_code,
+                    status="existing",
+                )
             return
 
         await asyncio.to_thread(ensure_can_overwrite_test, test_path, force=force)
@@ -209,6 +225,21 @@ class TestPipeline:
 
         await asyncio.to_thread(test_path.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(test_path.write_text, f"{test_code.rstrip()}\n", encoding="utf-8")
+
+        await self.history.arecord_attempt(
+            source_path=source_path,
+            attempt=0,
+            test_code=test_code,
+            status="generated",
+        )
+        src_text = await asyncio.to_thread(
+            source_path.read_text, encoding="utf-8", errors="replace"
+        )
+        await self.usage.arecord_call(
+            prompt_tokens=len(src_text) // 4,
+            completion_tokens=len(test_code) // 4,
+            is_heal=False,
+        )
 
         _emit(
             listener,
@@ -339,6 +370,20 @@ class TestPipeline:
         await asyncio.to_thread(ensure_can_overwrite_test, test_path, force=force)
         await asyncio.to_thread(test_path.write_text, f"{healed_code.rstrip()}\n", encoding="utf-8")
 
+        cls_val = classification.value if hasattr(classification, "value") else str(classification)
+        await self.history.arecord_attempt(
+            source_path=source_path,
+            attempt=attempt,
+            test_code=healed_code,
+            status="healed",
+            classification=cls_val,
+        )
+        await self.usage.arecord_call(
+            prompt_tokens=len(err_combined) // 4,
+            completion_tokens=len(healed_code) // 4,
+            is_heal=True,
+        )
+
         _emit(
             listener,
             PipelineEvent.HEALED,
@@ -357,6 +402,54 @@ class TestPipeline:
             await self.tracker.amark_processed(source_path, source_code)
         return result
 
+    async def _check_if_changed(
+        self,
+        source_path: Path,
+        source_code: str,
+        test_path: Path,
+        listener: PipelineListener | None,
+    ) -> PipelineResult | None:
+        has_changed = await self.tracker.ahas_changed(source_path, source_code)
+        if not has_changed:
+            _emit(
+                listener,
+                PipelineEvent.SKIPPED,
+                {"source_file": source_path, "test_file": test_path},
+            )
+            return PipelineResult(
+                source_file=source_path,
+                test_file=test_path,
+                status=PipelineStatus.SKIPPED,
+                passed=True,
+                attempts=0,
+                error_message="Source file unchanged; pipeline skipped.",
+            )
+        return None
+
+    async def _execute_runner(
+        self,
+        test_path: Path,
+        resolved_root: Path,
+        timeout_seconds: float,
+        *,
+        coverage: bool,
+        cov_source: str | None,
+    ) -> TestRunResult:
+        try:
+            return await self._runner_fn(
+                test_path,
+                resolved_root,
+                timeout_seconds=timeout_seconds,
+                coverage=coverage,
+                cov_source=cov_source,
+            )
+        except TypeError:
+            return await self._runner_fn(
+                test_path,
+                resolved_root,
+                timeout_seconds=timeout_seconds,
+            )
+
     async def run(
         self,
         source_file: Path,
@@ -369,6 +462,8 @@ class TestPipeline:
         use_judge: bool | None = None,
         max_heal_attempts: int | None = None,
         timeout_seconds: float | None = None,
+        coverage: bool = False,
+        cov_source: str | None = None,
         listener: PipelineListener | None = None,
     ) -> PipelineResult:
         """Execute the generate -> run -> classify -> heal -> judge state machine."""
@@ -385,21 +480,9 @@ class TestPipeline:
         source_code = await asyncio.to_thread(resolved_src.read_text, encoding="utf-8")
 
         if if_changed:
-            has_changed = await self.tracker.ahas_changed(resolved_src, source_code)
-            if not has_changed:
-                _emit(
-                    listener,
-                    PipelineEvent.SKIPPED,
-                    {"source_file": resolved_src, "test_file": test_path},
-                )
-                return PipelineResult(
-                    source_file=resolved_src,
-                    test_file=test_path,
-                    status=PipelineStatus.SKIPPED,
-                    passed=True,
-                    attempts=0,
-                    error_message="Source file unchanged; pipeline skipped.",
-                )
+            skipped = await self._check_if_changed(resolved_src, source_code, test_path, listener)
+            if skipped is not None:
+                return skipped
 
         effective_auto_heal = self.config.tests.auto_heal if auto_heal is None else auto_heal
         effective_use_judge = self.config.tests.use_judge if use_judge is None else use_judge
@@ -427,10 +510,12 @@ class TestPipeline:
                 {"attempt": attempt, "test_file": test_path},
             )
 
-            last_run = await self._runner_fn(
+            last_run = await self._execute_runner(
                 test_path,
                 resolved_root,
-                timeout_seconds=effective_timeout,
+                effective_timeout,
+                coverage=coverage,
+                cov_source=cov_source,
             )
 
             if last_run.return_code == 0:
@@ -439,6 +524,8 @@ class TestPipeline:
                     PipelineEvent.PASSED,
                     {"attempt": attempt, "test_file": test_path, "run_result": last_run},
                 )
+                if attempt > 0:
+                    await self.usage.arecord_success()
                 status = PipelineStatus.HEALED if attempt > 0 else PipelineStatus.PASSED
                 return await self._finish(
                     PipelineResult(

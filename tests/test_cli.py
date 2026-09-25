@@ -21,7 +21,9 @@ import ghost
 from ghost.cli import cli, main
 from ghost.daemon import DaemonStatus
 from ghost.errors import ConfigError, ExitCode, ProjectNotInitializedError
+from ghost.history import HistoryTracker, UsageTracker
 from ghost.pipeline import PipelineResult, PipelineStatus, TestPipeline
+from ghost.runner import TestRunResult
 from ghost.watcher import FileWatcher
 
 
@@ -795,3 +797,114 @@ def test_main_structured_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     # Anticipated GhostError returns ExitCode.ERROR (1)
     assert main(["generate", "nonexistent_file.py"]) == ExitCode.ERROR
+
+
+def test_stats_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    tracker = UsageTracker(tmp_path)
+    tracker.record_call(prompt_tokens=150, completion_tokens=75, is_heal=True)
+    tracker.record_success()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["stats"])
+    assert result.exit_code == 0
+    assert "AI Usage & Token Statistics" in result.output
+    assert "Prompt Tokens" in result.output
+    assert "150" in result.output
+
+
+def test_history_and_rollback_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[project]\nname = 'test'\n")
+    src = tmp_path / "mod.py"
+    src.write_text("x = 1\n")
+    test_file = tmp_path / "tests" / "test_mod.py"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text("# initial\n")
+
+    runner = CliRunner()
+
+    # Empty history
+    res0 = runner.invoke(cli, ["history"])
+    assert res0.exit_code == 0
+    assert "No test generation or healing history" in res0.output
+
+    # Record two attempts
+    tracker = HistoryTracker(tmp_path)
+    tracker.record_attempt(src, attempt=0, test_code="# attempt 0\n", status="generated")
+    tracker.record_attempt(
+        src, attempt=1, test_code="# attempt 1\n", status="healed", classification="LOGIC"
+    )
+
+    # History command for project
+    res1 = runner.invoke(cli, ["history"])
+    assert res1.exit_code == 0
+    assert "mod.py" in res1.output
+
+    # History command for specific file
+    res2 = runner.invoke(cli, ["history", str(src)])
+    assert res2.exit_code == 0
+    assert "History for mod.py" in res2.output
+    assert "attempt_0.py" in res2.output
+
+    # Rollback command to attempt 0
+    test_file.write_text("# attempt 1\n")
+    res_rb = runner.invoke(cli, ["rollback", str(src), "--attempt", "0"])
+    assert res_rb.exit_code == 0
+    assert "Successfully rolled back" in res_rb.output
+    assert test_file.read_text() == "# attempt 0\n"
+
+    # Rollback command using test_file path
+    res_rb2 = runner.invoke(cli, ["rollback", str(test_file)])
+    assert res_rb2.exit_code == 0
+    assert test_file.read_text() == "# attempt 0\n"
+
+
+def test_run_tests_with_coverage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    test_file = tmp_path / "test_sample.py"
+    test_file.write_text("def test_ok(): pass\n")
+
+    async def mock_run_test(*_args: Any, **_kwargs: Any) -> TestRunResult:
+        return TestRunResult(
+            test_file=test_file,
+            passed=True,
+            return_code=0,
+            stdout="TOTAL 10 1 90%",
+            stderr="",
+            coverage_summary="TOTAL 10 1 90%",
+        )
+
+    monkeypatch.setattr("ghost.cli.run_test", mock_run_test)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["run-tests", str(test_file), "--cov"])
+    assert result.exit_code == 0
+    assert "PASS:" in result.output
+    assert "Coverage: TOTAL 10 1 90%" in result.output
+
+
+def test_generate_batch_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ghost.toml").write_text("[project]\nname = 'test'\n")
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "mod_a.py").write_text("a = 1\n")
+    (src_dir / "mod_b.py").write_text("b = 2\n")
+
+    async def mock_pipeline_run(self: Any, source_file: Path, **_kwargs: Any) -> PipelineResult:
+        return PipelineResult(
+            source_file=source_file,
+            test_file=tmp_path / "tests" / f"test_{source_file.name}",
+            status=PipelineStatus.PASSED,
+            passed=True,
+            attempts=0,
+        )
+
+    monkeypatch.setattr("ghost.pipeline.TestPipeline.run", mock_pipeline_run)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["generate", "--all"])
+    assert result.exit_code == 0
+    assert "Batch Generation Summary" in result.output
+    assert "mod_a.py" in result.output
+    assert "mod_b.py" in result.output

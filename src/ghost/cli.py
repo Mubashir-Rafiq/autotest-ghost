@@ -45,7 +45,13 @@ from ghost.config import (
     load_config,
     write_default_config,
 )
-from ghost.console import print_banner, print_providers_table
+from ghost.console import (
+    print_banner,
+    print_batch_summary,
+    print_history_table,
+    print_providers_table,
+    print_usage_stats,
+)
 from ghost.daemon import (
     daemon_log_path,
     follow_log_stream,
@@ -61,7 +67,13 @@ from ghost.errors import (
     HandwrittenTestOverwriteError,
     ProjectNotInitializedError,
 )
-from ghost.indexer import budget_context, get_project_tree, walk_and_generate_json
+from ghost.history import HistoryTracker, UsageTracker
+from ghost.indexer import (
+    budget_context,
+    get_project_files,
+    get_project_tree,
+    walk_and_generate_json,
+)
 from ghost.pipeline import (
     PipelineEvent,
     PipelineListener,
@@ -77,7 +89,7 @@ from ghost.providers import (
     list_available_providers,
 )
 from ghost.runner import TestRunResult, run_test
-from ghost.watcher import FileWatcher
+from ghost.watcher import FileWatcher, is_test_file
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine, Sequence
@@ -525,7 +537,20 @@ def prompt_cmd(file: Path) -> None:
 @cli.command("run-tests")
 @click.argument("test_file", type=click.Path(path_type=Path, exists=True, dir_okay=False))
 @click.option("--timeout", type=float, default=None, help="Execution timeout in seconds.")
-def run_tests_cmd(test_file: Path, timeout: float | None = None) -> None:
+@click.option("--cov/--no-cov", default=False, help="Run with pytest-cov coverage reporting.")
+@click.option(
+    "--cov-source",
+    type=str,
+    default=None,
+    help="Package or directory name to measure coverage for.",
+)
+def run_tests_cmd(
+    test_file: Path,
+    timeout: float | None = None,
+    *,
+    cov: bool = False,
+    cov_source: str | None = None,
+) -> None:
     """Run a test file in an isolated subprocess and report structured results."""
     resolved_test = test_file.resolve()
     project_root = find_project_root(resolved_test) or resolved_test.parent
@@ -535,13 +560,23 @@ def run_tests_cmd(test_file: Path, timeout: float | None = None) -> None:
         timeout if timeout is not None else getattr(config.tests, "timeout_seconds", 30.0)
     )
     result: TestRunResult = _run_async(
-        run_test(resolved_test, project_root, timeout_seconds=effective_timeout)
+        run_test(
+            resolved_test,
+            project_root,
+            timeout_seconds=effective_timeout,
+            coverage=cov,
+            cov_source=cov_source,
+        )
     )
 
     if result.passed:
         click.echo(f"PASS: {test_file}")
+        if result.coverage_summary:
+            click.echo(f"Coverage: {result.coverage_summary}")
     else:
         click.echo(f"FAIL ({result.classification}): {test_file}")
+        if result.coverage_summary:
+            click.echo(f"Coverage: {result.coverage_summary}")
         if result.timed_out:
             click.echo(f"  Execution timed out after {effective_timeout:.1f}s.")
         elif result.exception_type:
@@ -595,8 +630,139 @@ class CliPipelineListener(PipelineListener):
             self._handle_result(event, data)
 
 
+def _run_batch_generation(
+    search_dir: Path,
+    project_root: Path,
+    config: Any,
+    *,
+    force: bool,
+    if_changed: bool,
+    auto_heal: bool | None,
+    use_judge: bool | None,
+    timeout: float | None,
+    cov: bool,
+    cov_source: str | None,
+) -> None:
+    candidate_rel_paths = get_project_files(search_dir, config.scanner)
+    source_files = [
+        (search_dir / rel).resolve()
+        for rel in candidate_rel_paths
+        if not is_test_file(search_dir / rel, project_root, config.tests.output_dir)
+    ]
+    if not source_files:
+        click.echo(f"No Python source files found in {search_dir}.")
+        return
+
+    click.echo(f"Found {len(source_files)} source file(s) for batch test generation.")
+    pipeline = TestPipeline(config=config, project_root=project_root)
+
+    async def _run_batch() -> list[PipelineResult]:
+        batch_results: list[PipelineResult] = []
+        for src in source_files:
+            listener = CliPipelineListener()
+            res = await pipeline.run(
+                src,
+                force=force,
+                force_generate=True,
+                if_changed=if_changed,
+                auto_heal=auto_heal,
+                use_judge=use_judge,
+                timeout_seconds=timeout,
+                coverage=cov,
+                cov_source=cov_source,
+                listener=listener,
+            )
+            batch_results.append(res)
+        return batch_results
+
+    results = _run_async(_run_batch())
+    print_batch_summary(results)
+
+    has_failure = any(not r.passed and r.status != PipelineStatus.SKIPPED for r in results)
+    if has_failure:
+        raise SystemExit(1)
+
+
+def _run_single_generation(
+    resolved_file: Path,
+    project_root: Path,
+    config: Any,
+    output: Path | None,
+    *,
+    force: bool,
+    if_changed: bool,
+    auto_heal: bool | None,
+    use_judge: bool | None,
+    timeout: float | None,
+    cov: bool,
+    cov_source: str | None,
+) -> None:
+    test_path = resolve_test_path(
+        resolved_file,
+        project_root,
+        output_dir=config.tests.output_dir,
+        custom_output=output,
+    )
+
+    if test_path.is_file() and not force and not if_changed:
+        if not is_ghost_managed_test(test_path):
+            raise HandwrittenTestOverwriteError(test_path)
+        if not click.confirm(f"Test file '{test_path}' already exists. Overwrite?", default=False):
+            click.echo("Generation cancelled.")
+            return
+
+    pipeline = TestPipeline(config=config, project_root=project_root)
+    listener = CliPipelineListener()
+    result: PipelineResult = _run_async(
+        pipeline.run(
+            resolved_file,
+            custom_output=output,
+            force=force,
+            force_generate=True,
+            if_changed=if_changed,
+            auto_heal=auto_heal,
+            use_judge=use_judge,
+            timeout_seconds=timeout,
+            coverage=cov,
+            cov_source=cov_source,
+            listener=listener,
+        )
+    )
+
+    if result.status == PipelineStatus.SKIPPED:
+        click.echo(f"SKIPPED: {resolved_file.name} is unchanged (--if-changed).")
+        return
+
+    if result.passed:
+        if result.attempts > 0:
+            click.echo(f"PASS (healed after {result.attempts} attempt(s)): {result.test_file}")
+        else:
+            click.echo(f"PASS: {result.test_file}")
+        if result.last_run and result.last_run.coverage_summary:
+            click.echo(f"Coverage: {result.last_run.coverage_summary}")
+    else:
+        click.echo(f"FAIL: {result.test_file} ({result.status.value})")
+        if result.last_run and result.last_run.coverage_summary:
+            click.echo(f"Coverage: {result.last_run.coverage_summary}")
+        if result.error_message:
+            click.echo(f"  {result.error_message}")
+        raise SystemExit(1)
+
+
 @cli.command("generate")
-@click.argument("file", type=click.Path(path_type=Path, dir_okay=False))
+@click.argument(
+    "file",
+    type=click.Path(path_type=Path, exists=False),
+    required=False,
+    default=None,
+)
+@click.option(
+    "--all",
+    "all_files",
+    is_flag=True,
+    default=False,
+    help="Batch generate tests for all source files in the project.",
+)
 @click.option(
     "--output",
     "-o",
@@ -636,65 +802,69 @@ class CliPipelineListener(PipelineListener):
     default=None,
     help="Execution timeout in seconds.",
 )
+@click.option(
+    "--cov/--no-cov",
+    default=False,
+    help="Run tests with pytest-cov coverage reporting.",
+)
+@click.option(
+    "--cov-source",
+    type=str,
+    default=None,
+    help="Package or directory name to measure coverage for.",
+)
 def generate_cmd(
-    file: Path,
+    file: Path | None = None,
     output: Path | None = None,
     *,
+    all_files: bool = False,
     force: bool = False,
     if_changed: bool = False,
     auto_heal: bool | None = None,
     use_judge: bool | None = None,
     timeout: float | None = None,
+    cov: bool = False,
+    cov_source: str | None = None,
 ) -> None:
-    """Generate, run, and optionally heal tests for a single Python file."""
-    resolved_file = file.resolve()
-    project_root = find_project_root(resolved_file) or resolved_file.parent
+    """Generate, run, and optionally heal tests for Python source files."""
+    if file is None and not all_files:
+        click.echo("Error: Please provide a source FILE or pass --all.", err=True)
+        raise SystemExit(1)
+
+    target_path = (file or Path.cwd()).resolve()
+    project_root = find_project_root(target_path) or (
+        target_path if target_path.is_dir() else target_path.parent
+    )
     config = load_config(project_root)
 
-    test_path = resolve_test_path(
-        resolved_file,
-        project_root,
-        output_dir=config.tests.output_dir,
-        custom_output=output,
-    )
-
-    if test_path.is_file() and not force and not if_changed:
-        if not is_ghost_managed_test(test_path):
-            raise HandwrittenTestOverwriteError(test_path)
-        if not click.confirm(f"Test file '{test_path}' already exists. Overwrite?", default=False):
-            click.echo("Generation cancelled.")
-            return
-
-    pipeline = TestPipeline(config=config, project_root=project_root)
-    listener = CliPipelineListener()
-    result: PipelineResult = _run_async(
-        pipeline.run(
-            resolved_file,
-            custom_output=output,
+    if all_files or target_path.is_dir():
+        search_dir = target_path if target_path.is_dir() else project_root
+        _run_batch_generation(
+            search_dir,
+            project_root,
+            config,
             force=force,
-            force_generate=True,
             if_changed=if_changed,
             auto_heal=auto_heal,
             use_judge=use_judge,
-            timeout_seconds=timeout,
-            listener=listener,
+            timeout=timeout,
+            cov=cov,
+            cov_source=cov_source,
         )
-    )
-
-    if result.status == PipelineStatus.SKIPPED:
-        click.echo(f"SKIPPED: {resolved_file.name} is unchanged (--if-changed).")
-        return
-
-    if result.passed:
-        if result.attempts > 0:
-            click.echo(f"PASS (healed after {result.attempts} attempt(s)): {result.test_file}")
-        else:
-            click.echo(f"PASS: {result.test_file}")
     else:
-        click.echo(f"FAIL: {result.test_file} ({result.status.value})")
-        if result.error_message:
-            click.echo(f"  {result.error_message}")
-        raise SystemExit(1)
+        _run_single_generation(
+            target_path,
+            project_root,
+            config,
+            output,
+            force=force,
+            if_changed=if_changed,
+            auto_heal=auto_heal,
+            use_judge=use_judge,
+            timeout=timeout,
+            cov=cov,
+            cov_source=cov_source,
+        )
 
 
 @cli.command("watch")
@@ -899,6 +1069,95 @@ def logs_cmd(
 
     with contextlib.suppress(KeyboardInterrupt):
         follow_log_stream(project_root, lambda line: click.echo(line, nl=False))
+
+
+@cli.command("history")
+@click.argument("file", type=click.Path(path_type=Path), required=False, default=None)
+def history_cmd(file: Path | None = None) -> None:
+    """View self-healing history and snapshots."""
+    target = (file or Path.cwd()).resolve()
+    project_root = find_project_root(target) or (target if target.is_dir() else target.parent)
+    tracker = HistoryTracker(project_root)
+
+    if file is not None and not file.is_dir():
+        records = tracker.get_history(target)
+        if not records:
+            click.echo(f"No healing history found for {file.name}.")
+            return
+        print_history_table(records, file.name)
+    else:
+        files = tracker.list_tracked_files()
+        if not files:
+            click.echo("No test generation or healing history recorded yet.")
+            return
+        click.echo(f"Files with healing history ({len(files)}):")
+        for f in files:
+            click.echo(f"  • {f}")
+
+
+@cli.command("rollback")
+@click.argument("file", type=click.Path(path_type=Path, exists=True))
+@click.option(
+    "--attempt",
+    "-a",
+    type=int,
+    default=None,
+    help="Snapshot attempt number to restore (default: attempt 0).",
+)
+def rollback_cmd(file: Path, attempt: int | None = None) -> None:
+    """Roll back a test file to a previously snapshotted attempt."""
+    resolved_file = file.resolve()
+    project_root = (
+        find_project_root(resolved_file)
+        or find_project_root(Path.cwd())
+        or (
+            resolved_file.parent.parent
+            if resolved_file.parent.name == "tests"
+            else resolved_file.parent
+        )
+    )
+    config = load_config(project_root)
+    tracker = HistoryTracker(project_root)
+
+    if is_test_file(resolved_file, project_root, config.tests.output_dir):
+        test_path = resolved_file
+        history_files = tracker.list_tracked_files()
+        matching_source: Path | None = None
+        for rel in history_files:
+            candidate_source = project_root / rel
+            expected_test = resolve_test_path(
+                candidate_source, project_root, config.tests.output_dir
+            )
+            if expected_test.resolve() == test_path:
+                matching_source = candidate_source
+                break
+        if matching_source is None:
+            click.echo(
+                f"Could not find source file history associated with test {file.name}.",
+                err=True,
+            )
+            raise SystemExit(1)
+        source_path = matching_source
+    else:
+        source_path = resolved_file
+        test_path = resolve_test_path(source_path, project_root, config.tests.output_dir)
+
+    try:
+        tracker.rollback(source_path, test_path, attempt=attempt)
+        target_label = f"attempt {attempt}" if attempt is not None else "original attempt 0"
+        click.echo(f"Successfully rolled back {test_path.name} to {target_label}.")
+    except Exception as err:
+        click.echo(f"Rollback failed: {err}", err=True)
+        raise SystemExit(1) from err
+
+
+@cli.command("stats")
+def stats_cmd() -> None:
+    """View cumulative AI token usage and test generation metrics."""
+    project_root = find_project_root(Path.cwd()) or Path.cwd()
+    tracker = UsageTracker(project_root)
+    usage = tracker.load_usage()
+    print_usage_stats(usage)
 
 
 def _system_exit_code(exc: SystemExit) -> int:

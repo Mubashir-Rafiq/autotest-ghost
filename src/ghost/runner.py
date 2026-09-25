@@ -185,6 +185,30 @@ class TestRunResult:
     classification: ErrorClassification | None = None
     exception_type: str | None = None
     message: str | None = None
+    coverage_summary: str | None = None
+
+
+async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Send SIGTERM then SIGKILL to a subprocess's process group."""
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+        except TimeoutError:
+            os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _extract_coverage_summary(stdout: str) -> str | None:
+    """Extract the TOTAL coverage line from pytest-cov stdout if present."""
+    if "TOTAL" not in stdout:
+        return None
+    for line in stdout.splitlines():
+        if "TOTAL" in line:
+            return line.strip()
+    return None
 
 
 async def run_test(
@@ -194,6 +218,8 @@ async def run_test(
     timeout_seconds: float = 30.0,
     python_executable: Path | None = None,
     env_vars: dict[str, str] | None = None,
+    coverage: bool = False,
+    cov_source: str | None = None,
 ) -> TestRunResult:
     """Run a pytest test file asynchronously with timeout and process-group isolation."""
     resolved_test, resolved_root, python_bin, env = await asyncio.to_thread(
@@ -214,6 +240,8 @@ async def run_test(
             "-o",
             "addopts=",
         ]
+        if coverage:
+            cmd.extend(["--cov", cov_source or ".", "--cov-report=term"])
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -232,15 +260,7 @@ async def run_test(
             )
         except TimeoutError:
             timed_out = True
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGTERM)
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=1.0)
-                except TimeoutError:
-                    os.killpg(pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            await _kill_process_group(proc)
             stdout_bytes, stderr_bytes = await proc.communicate()
 
         stdout = stdout_bytes.decode("utf-8", errors="replace")
@@ -260,6 +280,8 @@ async def run_test(
             )
 
         return_code = proc.returncode if proc.returncode is not None else 1
+        coverage_summary = _extract_coverage_summary(stdout) if coverage else None
+
         if return_code == 0:
             return TestRunResult(
                 test_file=resolved_test,
@@ -271,6 +293,7 @@ async def run_test(
                 classification=None,
                 exception_type=None,
                 message=None,
+                coverage_summary=coverage_summary,
             )
 
         # Parse structured report emitted by pytest_plugin
@@ -300,4 +323,5 @@ async def run_test(
             classification=classification,
             exception_type=exception_type,
             message=message,
+            coverage_summary=coverage_summary,
         )

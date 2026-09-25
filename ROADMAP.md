@@ -64,7 +64,8 @@ src/ghost/
 ├── watcher.py         # watchdog OS events, atomic saves, test filtering, bridge
 ├── daemon.py          # PID file management, process queries, log tailing, daemon hooks
 ├── console.py         # rich terminal formatting, panels, syntax highlighting, pipeline listener
-└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate, watch, init, start, stop, status, logs
+├── history.py         # snapshot archive, atomic metadata, rollback, cumulative usage tracking
+└── cli.py             # command group: version, doctor, config, providers, models, index, prompt, run-tests, generate, watch, init, start, stop, status, logs, history, rollback, stats
 tests/
 ├── conftest.py            # shared fixtures
 ├── test_architecture.py   # structural invariants the linters cannot express
@@ -73,6 +74,7 @@ tests/
 ├── test_console.py        # rich formatting and RichPipelineListener unit tests
 ├── test_daemon.py         # PID tracking, process queries, log tailing
 ├── test_e2e.py            # end-to-end integration tests (real init, index, run, heal, daemon)
+├── test_history.py        # HistoryTracker, UsageTracker, snapshot rollback
 ├── test_rate_limiter.py   # GCRA rate limiter scheduling and backoff
 ├── test_providers.py      # BaseProvider retry/rate-limiting template, 7 providers
 ├── test_indexer.py        # AST extraction, type hints, tree, budgeting
@@ -85,7 +87,7 @@ tests/
 └── test_watcher.py        # atomic rename saves, test filtering, lifecycle
 ```
 
-Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE`, `ghost generate FILE [--if-changed]`, `ghost watch [PATH]`, `ghost init [PATH]`, `ghost start [PATH]`, `ghost stop [PATH]`, `ghost status [PATH]`, `ghost logs [PATH]`, `ghost --help`.
+Working commands: `ghost version`, `ghost doctor`, `ghost config --show`, `ghost providers`, `ghost models`, `ghost index --show`, `ghost prompt FILE`, `ghost run-tests TEST_FILE [--cov]`, `ghost generate [FILE|--all] [--if-changed] [--cov]`, `ghost watch [PATH]`, `ghost init [PATH]`, `ghost start [PATH]`, `ghost stop [PATH]`, `ghost status [PATH]`, `ghost logs [PATH]`, `ghost history [FILE]`, `ghost rollback FILE [--attempt N]`, `ghost stats`, `ghost --help`.
 
 ---
 
@@ -181,6 +183,14 @@ Support for OpenAI, Anthropic, Ollama, LM Studio, OpenRouter, and Custom provide
 - Clear, actionable error messages when optional provider extras (`openai`, `anthropic`) are missing.
 - Model catalog expansion (`POPULAR_MODELS`, `PROVIDER_MODELS`) and automatic provider detection.
 
+### ✅ Stage 14 — Extra features
+**Adds:** `ghost history [FILE]`, `ghost rollback FILE [--attempt N]`, `ghost stats`, `ghost run-tests --cov`, `ghost generate [FILE|--all]`
+- `HistoryTracker` with per-file snapshot archiving in `.ghost/history/<source_path>/attempt_<N>.py` and atomic `meta.json`.
+- Test snapshot rollback restoring tests to earlier attempts or initial attempt 0.
+- `UsageTracker` recording cumulative LLM requests and token counts atomically in `.ghost/usage.json`.
+- Batch test generation discovering non-ignored project source files and rendering Rich summary tables.
+- Pytest coverage integration (`--cov`, `--cov-source`) and total line reporting.
+
 ---
 
 ## Optional stages (after 12, your choice)
@@ -188,8 +198,8 @@ Support for OpenAI, Anthropic, Ollama, LM Studio, OpenRouter, and Custom provide
 | # | Stage | Status | What it adds |
 |---|---|---|---|
 | 13 | More providers | ✅ **done** | OpenAI, Anthropic, Ollama, LM Studio, OpenRouter, Custom |
-| 14 | Extra features | ⬜ next | Coverage reporting, cost/token tracking, heal history, batch generate |
-| 15 | Publish | ⬜ | PyPI packaging and release workflow |
+| 14 | Extra features | ✅ **done** | Coverage reporting, cost/token tracking, heal history, batch generate |
+| 15 | Publish | ⬜ next | PyPI packaging and release workflow |
 
 ---
 

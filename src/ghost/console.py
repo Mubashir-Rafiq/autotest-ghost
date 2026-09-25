@@ -29,7 +29,13 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from ghost import __version__
-from ghost.pipeline import PipelineEvent, PipelineListener
+from ghost.history import AttemptRecord, UsageRecord
+from ghost.pipeline import (
+    PipelineEvent,
+    PipelineListener,
+    PipelineResult,
+    PipelineStatus,
+)
 
 if TYPE_CHECKING:
     from ghost.providers import ModelConfig
@@ -39,12 +45,15 @@ __all__ = [
     "RichPipelineListener",
     "get_console",
     "print_banner",
+    "print_batch_summary",
     "print_error",
+    "print_history_table",
     "print_info",
     "print_panel",
     "print_providers_table",
     "print_success",
     "print_syntax",
+    "print_usage_stats",
     "print_warning",
 ]
 
@@ -206,3 +215,103 @@ class RichPipelineListener(PipelineListener):
             )
         else:
             self._handle_result(event, data)
+
+
+def print_batch_summary(results: list[PipelineResult], *, c: Console | None = None) -> None:
+    """Print a summary table of batch generation outcomes."""
+    out = c or get_console()
+    table = Table(title="Batch Generation Summary", border_style="cyan")
+    table.add_column("Source File", style="cyan", no_wrap=True)
+    table.add_column("Test File", style="dim")
+    table.add_column("Status", justify="center")
+    table.add_column("Attempts", justify="right")
+    table.add_column("Details", style="dim")
+
+    passed_cnt = sum(
+        1 for r in results if r.status in (PipelineStatus.PASSED, PipelineStatus.HEALED)
+    )
+    healed_cnt = sum(1 for r in results if r.status == PipelineStatus.HEALED)
+    failed_cnt = sum(
+        1
+        for r in results
+        if r.status in (PipelineStatus.FAILED, PipelineStatus.BUG_IN_CODE, PipelineStatus.UNCLEAR)
+    )
+    skipped_cnt = sum(1 for r in results if r.status == PipelineStatus.SKIPPED)
+
+    for r in results:
+        if r.status == PipelineStatus.PASSED:
+            status_style = "[bold green]PASS[/bold green]"
+        elif r.status == PipelineStatus.HEALED:
+            status_style = "[bold cyan]HEALED[/bold cyan]"
+        elif r.status == PipelineStatus.SKIPPED:
+            status_style = "[dim]SKIPPED[/dim]"
+        else:
+            status_style = f"[bold red]{r.status.value}[/bold red]"
+
+        detail = r.error_message or ""
+        if r.last_run and r.last_run.coverage_summary:
+            detail = f"Cov: {r.last_run.coverage_summary}"
+
+        table.add_row(
+            r.source_file.name,
+            r.test_file.name,
+            status_style,
+            str(r.attempts),
+            detail,
+        )
+
+    out.print(table)
+    summary_text = (
+        f"[bold]Total:[/] {len(results)} | "
+        f"[bold green]Passed:[/] {passed_cnt} "
+        f"[dim]([cyan]Healed:[/] {healed_cnt})[/dim] | "
+        f"[bold red]Failed:[/] {failed_cnt} | "
+        f"[dim]Skipped:[/] {skipped_cnt}"
+    )
+    out.print(Panel(summary_text, border_style="blue"))
+
+
+def print_history_table(
+    records: list[AttemptRecord], source_file: str, *, c: Console | None = None
+) -> None:
+    """Print a styled table of heal history attempts for *source_file*."""
+    out = c or get_console()
+    table = Table(title=f"History for {source_file}", border_style="cyan")
+    table.add_column("Attempt", justify="right")
+    table.add_column("Timestamp", style="dim")
+    table.add_column("Status", justify="center")
+    table.add_column("Classification", style="yellow")
+    table.add_column("Snapshot File", style="dim")
+
+    for rec in records:
+        status_styled = (
+            f"[green]{rec.status}[/green]"
+            if rec.status in ("passed", "healed", "generated")
+            else f"[red]{rec.status}[/red]"
+        )
+        table.add_row(
+            str(rec.attempt),
+            rec.timestamp[:19].replace("T", " "),
+            status_styled,
+            rec.classification or "-",
+            rec.snapshot_file,
+        )
+
+    out.print(table)
+
+
+def print_usage_stats(usage: UsageRecord, *, c: Console | None = None) -> None:
+    """Print cumulative LLM token usage and request statistics."""
+    out = c or get_console()
+    table = Table(title="AI Usage & Token Statistics", border_style="cyan")
+    table.add_column("Metric", style="cyan bold")
+    table.add_column("Value", justify="right", style="green")
+
+    table.add_row("Total Requests", f"{usage.total_requests:,}")
+    table.add_row("Prompt Tokens", f"{usage.prompt_tokens:,}")
+    table.add_row("Completion Tokens", f"{usage.completion_tokens:,}")
+    table.add_row("Total Tokens", f"{usage.total_tokens:,}")
+    table.add_row("Healing Attempts", f"{usage.heal_attempts:,}")
+    table.add_row("Successfully Healed Tests", f"{usage.healed_tests:,}")
+
+    out.print(table)
