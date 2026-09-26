@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,9 +53,16 @@ def pytest_collectreport(report: pytest.CollectReport) -> None:
         return
 
     longrepr_str = str(report.longrepr)
-    exc_type = "SyntaxError" if "SyntaxError" in longrepr_str else "ImportError"
-    if "ModuleNotFoundError" in longrepr_str:
+    exc_type = "ImportError"
+    match = re.search(r"(?:^E\s+|\b)([A-Z]\w*(?:Error|Exception)):", longrepr_str, re.MULTILINE)
+    if match:
+        exc_type = match.group(1)
+    elif "SyntaxError" in longrepr_str:
+        exc_type = "SyntaxError"
+    elif "ModuleNotFoundError" in longrepr_str:
         exc_type = "ModuleNotFoundError"
+    elif "IndentationError" in longrepr_str:
+        exc_type = "IndentationError"
 
     _GHOST_FAILURES[report.nodeid] = {
         "nodeid": report.nodeid,

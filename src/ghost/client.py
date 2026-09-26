@@ -34,6 +34,7 @@ from ghost.prompts import (
     build_generation_prompt,
     build_healing_prompt,
     build_judge_prompt,
+    format_header,
 )
 
 if TYPE_CHECKING:
@@ -50,7 +51,7 @@ __all__ = [
     "validate_test_code",
 ]
 
-_MARKDOWN_BLOCK_RE = re.compile(r"^```(?:python)?\s*\n(.*?)\n```\s*$", re.DOTALL | re.IGNORECASE)
+_MARKDOWN_BLOCK_RE = re.compile(r"```(?:python)?\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
 
 
 class JudgeOutcome(StrEnum):
@@ -78,11 +79,19 @@ def parse_judge_response(raw_text: str) -> JudgeOutcome:
 
 
 def clean_llm_response(raw_text: str) -> str:
-    """Strip markdown code block fences and surrounding whitespace from LLM output."""
+    """Strip markdown code block fences and surrounding whitespace/prose from LLM output."""
     text = raw_text.strip()
-    match = _MARKDOWN_BLOCK_RE.search(text)
-    if match:
-        return match.group(1).strip()
+    matches = list(_MARKDOWN_BLOCK_RE.finditer(text))
+    if matches:
+        candidates = [m.group(1).strip() for m in matches]
+        # Prefer the candidate containing test definitions or test imports
+        test_candidates = [
+            c
+            for c in candidates
+            if "def test_" in c or "import pytest" in c or "import unittest" in c
+        ]
+        return test_candidates[0] if test_candidates else candidates[0]
+
     if text.startswith("```python"):
         text = text[len("```python") :]
     elif text.startswith("```"):
@@ -141,7 +150,10 @@ def _prepare_generation_context(
 ) -> tuple[str, str, str, dict[str, str]]:
     resolved_src = source_path.resolve()
     resolved_root = project_root.resolve()
-    rel_path = resolved_src.relative_to(resolved_root).as_posix()
+    try:
+        rel_path = resolved_src.relative_to(resolved_root).as_posix()
+    except ValueError:
+        rel_path = resolved_src.name
     source_code = resolved_src.read_text(encoding="utf-8")
 
     tree_str = get_project_tree(resolved_root, config.scanner)
@@ -160,7 +172,10 @@ def _prepare_healing_context(
     resolved_src = source_path.resolve()
     resolved_test = test_file.resolve()
     resolved_root = project_root.resolve()
-    rel_path = resolved_src.relative_to(resolved_root).as_posix()
+    try:
+        rel_path = resolved_src.relative_to(resolved_root).as_posix()
+    except ValueError:
+        rel_path = resolved_src.name
 
     source_code = resolved_src.read_text(encoding="utf-8")
     test_code = resolved_test.read_text(encoding="utf-8")
@@ -212,6 +227,9 @@ class LLMClient:
         )
 
         cleaned = clean_llm_response(raw)
+        if HEADER_PREFIX not in cleaned:
+            hdr = format_header(rel_path, timestamp=timestamp)
+            cleaned = f"{hdr}\n{cleaned}"
         validate_test_code(cleaned, source_path=rel_path)
         return cleaned
 
@@ -250,6 +268,9 @@ class LLMClient:
         )
 
         cleaned = clean_llm_response(raw)
+        if HEADER_PREFIX not in cleaned:
+            hdr = format_header(rel_path, timestamp=timestamp)
+            cleaned = f"{hdr}\n{cleaned}"
         validate_test_code(cleaned, source_path=rel_path)
         return cleaned
 

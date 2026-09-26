@@ -169,7 +169,7 @@ def _offer_save_to_env(project_root: Path, var_name: str, key_value: str) -> Non
             if var_name in existing:
                 updated = re.sub(
                     rf"^{re.escape(var_name)}=.*$",
-                    f"{var_name}={key_value}",
+                    lambda _m: f"{var_name}={key_value}",
                     existing,
                     flags=re.MULTILINE,
                 )
@@ -356,7 +356,10 @@ def doctor() -> None:
         click.echo("  ghost.toml           not found")
 
     click.echo("\nAI Providers")
-    config_for_doctor = load_config()
+    try:
+        config_for_doctor = load_config()
+    except ConfigError:
+        config_for_doctor = None
     provider_status: dict[str, bool] = _run_async(list_available_providers(config_for_doctor))
     for prov_name, is_avail in sorted(provider_status.items()):
         status_str = "available" if is_avail else "not configured"
@@ -459,7 +462,7 @@ def models_cmd(provider: str | None) -> None:
 )
 @click.option(
     "--budget",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
     help="Limit output to a character budget (context budgeting).",
 )
@@ -536,7 +539,12 @@ def prompt_cmd(file: Path) -> None:
 
 @cli.command("run-tests")
 @click.argument("test_file", type=click.Path(path_type=Path, exists=True, dir_okay=False))
-@click.option("--timeout", type=float, default=None, help="Execution timeout in seconds.")
+@click.option(
+    "--timeout",
+    type=click.FloatRange(min=0.001),
+    default=None,
+    help="Execution timeout in seconds.",
+)
 @click.option("--cov/--no-cov", default=False, help="Run with pytest-cov coverage reporting.")
 @click.option(
     "--cov-source",
@@ -798,7 +806,7 @@ def _run_single_generation(
 )
 @click.option(
     "--timeout",
-    type=float,
+    type=click.FloatRange(min=0.001),
     default=None,
     help="Execution timeout in seconds.",
 )
@@ -1041,7 +1049,7 @@ def status_cmd(path: Path | None = None) -> None:
 @click.option(
     "--lines",
     "-n",
-    type=int,
+    type=click.IntRange(min=1),
     default=20,
     help="Number of lines to show (default 20).",
 )
@@ -1100,7 +1108,7 @@ def history_cmd(file: Path | None = None) -> None:
 @click.option(
     "--attempt",
     "-a",
-    type=int,
+    type=click.IntRange(min=0),
     default=None,
     help="Snapshot attempt number to restore (default: attempt 0).",
 )

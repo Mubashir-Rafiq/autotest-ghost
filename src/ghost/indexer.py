@@ -29,6 +29,7 @@ import ast
 import json
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -307,11 +308,13 @@ def index_file(file_path: Path, root: Path | None = None) -> FileIndex | None:
         logger.warning("Cannot read %s: %s", file_path, err)
         return None
 
-    rel_path = (
-        file_path.resolve().relative_to(root.resolve()).as_posix()
-        if root is not None
-        else file_path.as_posix()
-    )
+    if root is not None:
+        try:
+            rel_path = file_path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel_path = file_path.as_posix()
+    else:
+        rel_path = file_path.as_posix()
     return index_source(content, file_path=rel_path)
 
 
@@ -440,9 +443,18 @@ def walk_and_generate_json(
         if findex is not None:
             index_map[rel_path.as_posix()] = findex.format_summary()
 
-    target_out.parent.mkdir(parents=True, exist_ok=True)
-    target_out.write_text(json.dumps(index_map, indent=2, sort_keys=True), encoding="utf-8")
+    _write_context_atomic(target_out, index_map)
     return index_map
+
+
+def _write_context_atomic(target_context: Path, data: dict[str, str]) -> None:
+    target_context.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", dir=target_context.parent, delete=False, encoding="utf-8"
+    ) as f:
+        f.write(json.dumps(data, indent=2, sort_keys=True))
+        temp_path = Path(f.name)
+    temp_path.replace(target_context)
 
 
 def walk_and_modify_json(
@@ -476,11 +488,14 @@ def walk_and_modify_json(
         except (json.JSONDecodeError, OSError):
             context_data = {}
 
-    rel_key = resolved_file.relative_to(resolved_root).as_posix()
+    try:
+        rel_key = resolved_file.relative_to(resolved_root).as_posix()
+    except ValueError:
+        rel_key = resolved_file.name
+
     context_data[rel_key] = findex.format_summary()
 
-    target_context.parent.mkdir(parents=True, exist_ok=True)
-    target_context.write_text(json.dumps(context_data, indent=2, sort_keys=True), encoding="utf-8")
+    _write_context_atomic(target_context, context_data)
     return context_data
 
 
@@ -507,10 +522,7 @@ def walk_and_delete_json(
 
     if rel_key in context_data:
         del context_data[rel_key]
-        target_context.parent.mkdir(parents=True, exist_ok=True)
-        target_context.write_text(
-            json.dumps(context_data, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        _write_context_atomic(target_context, context_data)
 
     return context_data
 

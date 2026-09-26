@@ -109,8 +109,16 @@ def is_test_file(
     if name.startswith("test_") or name.endswith("_test.py"):
         return True
 
+    resolved_root = root.resolve()
     try:
-        rel = resolved_path.relative_to(root.resolve())
+        resolved_out = (resolved_root / test_output_dir).resolve()
+        if resolved_out in resolved_path.parents or resolved_path == resolved_out:
+            return True
+    except (ValueError, OSError):
+        pass
+
+    try:
+        rel = resolved_path.relative_to(resolved_root)
         for part in rel.parts[:-1]:
             if part in (test_output_dir, "tests"):
                 return True
@@ -317,8 +325,11 @@ class FileWatcher:
         task.add_done_callback(self._background_tasks.discard)
 
     async def _async_file_deleted(self, path: Path) -> None:
-        await self.pipeline.tracker.aremove(path)
-        await asyncio.to_thread(walk_and_delete_json, self.project_root, path)
+        try:
+            await self.pipeline.tracker.aremove(path)
+            await asyncio.to_thread(walk_and_delete_json, self.project_root, path)
+        except Exception:
+            logger.exception("Error handling file deletion for %s", path)
 
     def start(self) -> None:
         """Start the file watcher observer and job queue worker pool."""

@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import json
 import tempfile
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -74,6 +75,7 @@ class HistoryTracker:
     def __init__(self, project_root: Path) -> None:
         self.project_root: Final[Path] = project_root.resolve()
         self.history_dir: Final[Path] = self.project_root / _HISTORY_DIR_NAME
+        self._lock: Final[threading.Lock] = threading.Lock()
 
     def _relative_key(self, path: Path) -> str:
         resolved = path.resolve()
@@ -113,21 +115,28 @@ class HistoryTracker:
             snapshot_file=snapshot_name,
         )
 
-        entries: list[dict[str, Any]] = []
-        if meta_file.is_file():
-            try:
-                raw = json.loads(meta_file.read_text(encoding="utf-8"))
-                if isinstance(raw, list):
-                    entries = raw
-            except Exception:
-                entries = []
+        with self._lock:
+            entries: list[dict[str, Any]] = []
+            if meta_file.is_file():
+                try:
+                    raw = json.loads(meta_file.read_text(encoding="utf-8"))
+                    if isinstance(raw, list):
+                        entries = raw
+                except Exception:
+                    entries = []
 
-        entries.append(record.model_dump())
+            entries.append(record.model_dump())
 
-        # Atomic write
-        temp_file = file_history_dir / "meta.json.tmp"
-        temp_file.write_text(json.dumps(entries, indent=2), encoding="utf-8")
-        temp_file.replace(meta_file)
+            # Atomic write
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=file_history_dir,
+                delete=False,
+                encoding="utf-8",
+            ) as f:
+                f.write(json.dumps(entries, indent=2))
+                temp_path = Path(f.name)
+            temp_path.replace(meta_file)
 
         return snapshot_path
 
@@ -237,6 +246,7 @@ class UsageTracker:
     def __init__(self, project_root: Path) -> None:
         self.project_root: Final[Path] = project_root.resolve()
         self.usage_file: Final[Path] = self.project_root / _USAGE_FILE_NAME
+        self._lock: Final[threading.Lock] = threading.Lock()
 
     def load_usage(self) -> UsageRecord:
         """Load current cumulative usage stats, returning zeroed stats on failure."""
@@ -257,34 +267,35 @@ class UsageTracker:
         healed_success: bool = False,
     ) -> UsageRecord:
         """Record an LLM call and update cumulative counts."""
-        current = self.load_usage()
-        new_total_reqs = current.total_requests + 1
-        new_prompt_tok = current.prompt_tokens + max(0, prompt_tokens)
-        new_comp_tok = current.completion_tokens + max(0, completion_tokens)
-        new_tot_tok = current.total_tokens + max(0, prompt_tokens + completion_tokens)
-        new_heal_att = current.heal_attempts + (1 if is_heal else 0)
-        new_healed = current.healed_tests + (1 if healed_success else 0)
+        with self._lock:
+            current = self.load_usage()
+            new_total_reqs = current.total_requests + 1
+            new_prompt_tok = current.prompt_tokens + max(0, prompt_tokens)
+            new_comp_tok = current.completion_tokens + max(0, completion_tokens)
+            new_tot_tok = current.total_tokens + max(0, prompt_tokens + completion_tokens)
+            new_heal_att = current.heal_attempts + (1 if is_heal else 0)
+            new_healed = current.healed_tests + (1 if healed_success else 0)
 
-        updated = UsageRecord(
-            total_requests=new_total_reqs,
-            prompt_tokens=new_prompt_tok,
-            completion_tokens=new_comp_tok,
-            total_tokens=new_tot_tok,
-            heal_attempts=new_heal_att,
-            healed_tests=new_healed,
-        )
+            updated = UsageRecord(
+                total_requests=new_total_reqs,
+                prompt_tokens=new_prompt_tok,
+                completion_tokens=new_comp_tok,
+                total_tokens=new_tot_tok,
+                heal_attempts=new_heal_att,
+                healed_tests=new_healed,
+            )
 
-        self.usage_file.parent.mkdir(parents=True, exist_ok=True)
-        with contextlib.suppress(Exception):
-            with tempfile.NamedTemporaryFile(
-                "w",
-                dir=self.usage_file.parent,
-                delete=False,
-                encoding="utf-8",
-            ) as f:
-                f.write(json.dumps(updated.model_dump(), indent=2))
-                temp_path = Path(f.name)
-            temp_path.replace(self.usage_file)
+            self.usage_file.parent.mkdir(parents=True, exist_ok=True)
+            with contextlib.suppress(Exception):
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    dir=self.usage_file.parent,
+                    delete=False,
+                    encoding="utf-8",
+                ) as f:
+                    f.write(json.dumps(updated.model_dump(), indent=2))
+                    temp_path = Path(f.name)
+                temp_path.replace(self.usage_file)
 
         return updated
 

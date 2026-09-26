@@ -23,6 +23,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import tempfile
+import threading
 from pathlib import Path
 from typing import Final
 
@@ -46,6 +48,7 @@ class ChangeTracker:
     def __init__(self, project_root: Path) -> None:
         self.project_root: Final[Path] = project_root.resolve()
         self.hashes_file: Final[Path] = self.project_root / ".ghost" / "hashes.json"
+        self._lock: Final[threading.Lock] = threading.Lock()
 
     def normalize_key(self, path: Path) -> str:
         """Convert a path into a collision-free relative POSIX key."""
@@ -69,34 +72,43 @@ class ChangeTracker:
         return {}
 
     def save_hashes(self, data: dict[str, str]) -> None:
-        """Persist hashes atomically via a temporary file replace."""
+        """Persist hashes atomically via a unique temporary file replace."""
         self.hashes_file.parent.mkdir(parents=True, exist_ok=True)
-        temp_file = self.hashes_file.with_suffix(".tmp")
         serialized = json.dumps(data, indent=2, sort_keys=True)
-        temp_file.write_text(f"{serialized}\n", encoding="utf-8")
-        temp_file.replace(self.hashes_file)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            dir=self.hashes_file.parent,
+            delete=False,
+            encoding="utf-8",
+        ) as f:
+            f.write(f"{serialized}\n")
+            temp_path = Path(f.name)
+        temp_path.replace(self.hashes_file)
 
     def has_changed(self, path: Path, content: str) -> bool:
         """Return True if *content* differs from the recorded hash for *path*."""
         key = self.normalize_key(path)
-        hashes = self.load_hashes()
+        with self._lock:
+            hashes = self.load_hashes()
         previous_hash = hashes.get(key)
         return previous_hash != compute_hash(content)
 
     def mark_processed(self, path: Path, content: str) -> None:
         """Record *content*'s hash as the last-processed version of *path*."""
         key = self.normalize_key(path)
-        hashes = self.load_hashes()
-        hashes[key] = compute_hash(content)
-        self.save_hashes(hashes)
+        with self._lock:
+            hashes = self.load_hashes()
+            hashes[key] = compute_hash(content)
+            self.save_hashes(hashes)
 
     def remove(self, path: Path) -> None:
         """Remove *path*'s recorded hash when the file is deleted."""
         key = self.normalize_key(path)
-        hashes = self.load_hashes()
-        if key in hashes:
-            del hashes[key]
-            self.save_hashes(hashes)
+        with self._lock:
+            hashes = self.load_hashes()
+            if key in hashes:
+                del hashes[key]
+                self.save_hashes(hashes)
 
     async def ahas_changed(self, path: Path, content: str) -> bool:
         """Asynchronous non-blocking check whether *content* has changed."""

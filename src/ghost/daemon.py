@@ -96,7 +96,7 @@ class DaemonLock:
         """
         self.pid_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            fd = os.open(self.pid_path, os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o644)
+            fd = os.open(self.pid_path, os.O_CREAT | os.O_RDWR, 0o644)
         except OSError:
             return False
 
@@ -109,6 +109,8 @@ class DaemonLock:
         self._fd = fd
         pid_bytes = f"{os.getpid()}\n".encode()
         try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
             os.write(fd, pid_bytes)
             os.fsync(fd)
         except OSError:
@@ -119,15 +121,15 @@ class DaemonLock:
 
     def release(self) -> None:
         """Release the lock, close file descriptor, and remove PID file."""
+        with contextlib.suppress(FileNotFoundError, OSError):
+            self.pid_path.unlink()
+
         if self._fd is not None:
             with contextlib.suppress(OSError):
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
             with contextlib.suppress(OSError):
                 os.close(self._fd)
             self._fd = None
-
-        with contextlib.suppress(FileNotFoundError, OSError):
-            self.pid_path.unlink()
 
 
 def daemon_pid_path(project_root: Path) -> Path:
@@ -247,17 +249,24 @@ def start_daemon(project_root: Path) -> int:
         stderr=subprocess.DEVNULL,
     )
 
-    time.sleep(_STARTUP_WAIT_SECONDS)
+    deadline = time.monotonic() + _STARTUP_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            msg = f"daemon exited immediately with code {proc.returncode}"
+            raise RuntimeError(msg)
+        running, _ = is_daemon_running(project_root)
+        if running:
+            return proc.pid
+        time.sleep(_POLL_INTERVAL)
+
     if proc.poll() is not None:
         msg = f"daemon exited immediately with code {proc.returncode}"
         raise RuntimeError(msg)
 
-    pid_path = daemon_pid_path(project_root)
-    if not pid_path.is_file():
-        with contextlib.suppress(OSError):
-            pid_path.write_text(str(proc.pid), encoding="utf-8")
-
-    return proc.pid
+    with contextlib.suppress(OSError):
+        proc.terminate()
+    msg = f"daemon failed to acquire lock and initialize within {_STARTUP_WAIT_SECONDS}s"
+    raise RuntimeError(msg)
 
 
 def stop_daemon(project_root: Path, *, grace_period: float = GRACE_PERIOD_SECONDS) -> bool:

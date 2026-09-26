@@ -21,6 +21,7 @@ Guarantees:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -92,9 +93,8 @@ def classify_error(
         return _EXCEPTION_LOOKUP[exception_type]
 
     combined = f"{exception_type or ''}\n{stdout}\n{stderr}"
-    if "Assertion" in combined:
-        return ErrorClassification.LOGIC
 
+    # Syntax and import errors take priority over substring assertion matches
     syntax_markers = (
         "IndentationError",
         "SyntaxError",
@@ -105,6 +105,9 @@ def classify_error(
     )
     if any(marker in combined for marker in syntax_markers):
         return ErrorClassification.SYNTAX
+
+    if "Assertion" in combined:
+        return ErrorClassification.LOGIC
 
     runtime_markers = (
         "AttributeError",
@@ -161,11 +164,10 @@ def _prepare_runner_environment(
 
     ghost_src_dir = str(Path(__file__).resolve().parent.parent)
     existing_pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{resolved_root}:{ghost_src_dir}:{existing_pp}"
-        if existing_pp
-        else f"{resolved_root}:{ghost_src_dir}"
-    )
+    pp_entries = [str(resolved_root), ghost_src_dir]
+    if existing_pp:
+        pp_entries.append(existing_pp)
+    env["PYTHONPATH"] = os.pathsep.join(pp_entries)
 
     return resolved_test, resolved_root, python_bin, env
 
@@ -190,6 +192,17 @@ class TestRunResult:
 
 async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
     """Send SIGTERM then SIGKILL to a subprocess's process group."""
+    if sys.platform == "win32":
+        try:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=1.0)
+            except TimeoutError:
+                proc.kill()
+        except ProcessLookupError:
+            pass
+        return
+
     try:
         pgid = os.getpgid(proc.pid)
         os.killpg(pgid, signal.SIGTERM)
@@ -197,8 +210,9 @@ async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
             await asyncio.wait_for(proc.wait(), timeout=1.0)
         except TimeoutError:
             os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    except (ProcessLookupError, OSError, AttributeError):
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
 
 
 def _extract_coverage_summary(stdout: str) -> str | None:
@@ -261,7 +275,12 @@ async def run_test(
         except TimeoutError:
             timed_out = True
             await _kill_process_group(proc)
-            stdout_bytes, stderr_bytes = await proc.communicate()
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=2.0
+                )
+            except TimeoutError:
+                stdout_bytes, stderr_bytes = b"", b"[ghost: pipe closed after timeout]"
 
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")

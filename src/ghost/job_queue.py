@@ -237,13 +237,6 @@ class JobQueue:
             try:
                 with contextlib.suppress(Exception):
                     await self.handler(path)
-            except asyncio.CancelledError:
-                async with self._lock:
-                    self._in_flight.discard(path)
-                    self._queue.task_done()
-                    if not self._in_flight and not self._rerun_pending and self._queue.empty():
-                        self._idle_event.set()
-                raise
             finally:
                 async with self._lock:
                     self._in_flight.discard(path)
@@ -252,8 +245,9 @@ class JobQueue:
                     # If an update arrived while this worker was processing, enqueue now
                     if path in self._rerun_pending:
                         self._rerun_pending.discard(path)
-                        self._queued.add(path)
-                        self._queue.put_nowait(path)
+                        if not getattr(self, "_stopped", False):
+                            self._queued.add(path)
+                            self._queue.put_nowait(path)
 
                     if not self._in_flight and not self._rerun_pending and self._queue.empty():
                         self._idle_event.set()
